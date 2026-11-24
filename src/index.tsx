@@ -19,19 +19,22 @@ const getInfo = callable<[], Info>("get_info");
 const wowShortcuts = callable<[shortcuts: { appid: number; exe: string; startdir: string }[]], number[]>(
   "wow_shortcuts",
 );
+const dropOldLauncher = callable<[], boolean>("drop_old_launcher");
 const setMode = callable<[appid: number, mode: Mode], Info["apps"]>("set_mode");
 const closeSplash = callable<[], number>("close_splash");
 const bugReport = callable<[], Record<string, any>>("bug_report");
 
 // GitHub repo that "Report a problem" opens a new issue on.
-const REPO = "AstroPhyzix/decky-wow-splash";
+const REPO = "AstroPhyzix/wow-splash";
 const MAX_URL = 7500; // GitHub rejects much longer new-issue links
 
 declare const appStore: any;
 
 const SHORTCUT = 1073741824; // app_type of non-Steam shortcuts
-// Our wrapper in launch options: "<...>/decky-wow-splash/launch.sh" <appid>
-const WRAPPER = /"[^"]*\/decky-wow-splash\/launch\.sh"\s+\d+\s+/g;
+// Our wrapper in launch options: "<...>/wow-splash/launch.sh" <appid> (older versions used a
+// longer folder name, also matched so they can be moved over)
+const WRAPPER = /"[^"]*\/[\w-]*wow-splash\/launch\.sh"\s+\d+\s+/g;
+const OLD_PATH = /\/[\w-]+-wow-splash\/launch\.sh/;
 
 function shortcuts(): { appid: number; name: string }[] {
   return (appStore?.allApps ?? [])
@@ -65,7 +68,7 @@ function appDetails(appid: number): Promise<Details> {
   });
 }
 
-const hasSplash = (opts: string) => opts.includes("/decky-wow-splash/launch.sh");
+const hasSplash = (opts: string) => /\/[\w-]*wow-splash\/launch\.sh/.test(opts);
 
 function withSplash(opts: string, launcher: string, appid: number): string {
   const rest = withoutSplash(opts);
@@ -88,7 +91,7 @@ async function reportProblem(list: Shortcut[]) {
     "<!-- Describe what you saw, e.g. the splash stayed up, closed too early, flickered... -->",
     "",
     "**System**",
-    `- WoW Splash ${r.plugin}, Decky ${r.decky}`,
+    `- WoW Splash ${r.plugin}, loader ${r.loader}`,
     `- ${r.os}`,
     `- xdotool: ${r.xdotool ? "yes" : "no"}, Deck controller: ${r.deck_controller ? "yes" : "no"}`,
     `- Settings: \`${JSON.stringify(r.settings)}\``,
@@ -153,8 +156,22 @@ function Content() {
 
   const load = async () => {
     const i = await getInfo();
+    // Move shortcuts still pointing at the old wrapper path to the new one.
+    const sc = shortcuts();
+    const details = await Promise.all(sc.map((s) => appDetails(s.appid)));
+    const old = sc.filter((_, n) => OLD_PATH.test(details[n].options));
+    for (const s of old) {
+      const d = details[sc.indexOf(s)];
+      d.options = withSplash(d.options, i.launcher, s.appid);
+      SteamClient.Apps.SetAppLaunchOptions(s.appid, d.options);
+    }
+    if (old.length) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const still = await Promise.all(old.map((s) => appDetails(s.appid)));
+      if (!still.some((d) => OLD_PATH.test(d.options))) await dropOldLauncher();
+    }
     // A shortcut counts as WoW if its program or Proton prefix holds WoW Forever / Battle.net.
-    const all = await Promise.all(shortcuts().map(async (s) => ({ ...s, ...(await appDetails(s.appid)) })));
+    const all = sc.map((s, n) => ({ ...s, ...details[n] }));
     const wow = new Set(await wowShortcuts(all.map(({ appid, exe, startdir }) => ({ appid, exe, startdir }))));
     setInfo(i);
     setList(all.filter((s) => wow.has(s.appid)).map(({ appid, name, options }) => ({ appid, name, options })));

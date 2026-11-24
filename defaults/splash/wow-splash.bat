@@ -1,6 +1,6 @@
 @echo off
 setlocal
-rem WoW Splash (Decky plugin). Starts Battle.net. With "launch": asks it to start WoW Forever
+rem WoW Splash plugin. Starts Battle.net. With "launch": asks it to start WoW Forever
 rem every ~3s until Wow.exe runs (--exec is ignored on a cold start, so it is sent again).
 rem Wine: find /i and find /c break, and Battle.net locks its log, so watch the process list.
 set "BNET=C:\Program Files (x86)\Battle.net"

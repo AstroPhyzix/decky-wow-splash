@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WoW Forever launch splash (Decky plugin "WoW Splash").
+"""WoW Forever launch splash (plugin "WoW Splash").
 
 Started by the plugin's launch wrapper (Steam launch options: `launch.sh <appid> %command%`).
 Two modes (WOW_SPLASH_MODE, from the plugin's settings):
@@ -50,7 +50,7 @@ SPLASH_APPID = (APPID + 1) & 0xFFFFFFFF
 TIMEOUT = 150      # step aside for good if WoW isn't running by then (not counting time aside)
 LOGIN_GRACE = 6    # auto-login flashes the login window ~3s; only step aside if it stays
 GONE_GRACE = 5     # Battle.net and the game both gone this long -> the launch was closed
-DATA_DIR = os.environ.get("WOW_SPLASH_DATA") or os.path.expanduser("~/.local/share/decky-wow-splash")
+DATA_DIR = os.environ.get("WOW_SPLASH_DATA") or os.path.expanduser("~/.local/share/wow-splash")
 TIMINGS = os.path.join(DATA_DIR, f"timings-{APPID}.json")
 REPORT = os.path.join(DATA_DIR, "last-launch.json")
 ART = os.path.join(os.path.dirname(os.path.abspath(__file__)), "art")

@@ -1,9 +1,9 @@
 #!/bin/bash
-# Builds the frontend and packs a Decky-installable zip into out/ (same layout the Decky CLI makes).
+# Builds the frontend and packs the installable plugin zip into out/.
 set -e
 cd "$(dirname "$0")"
 pnpm build
-NAME=decky-wow-splash
+NAME=wow-splash
 VER=$(python3 -c 'import json;print(json.load(open("package.json"))["version"])')
 rm -rf out && mkdir -p "out/$NAME"
 cp -r dist main.py plugin.json package.json LICENSE README.md "out/$NAME/"

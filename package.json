@@ -1,7 +1,7 @@
 {
-  "name": "decky-wow-splash",
-  "version": "1.4.0",
-  "description": "Decky plugin: launch World of Warcraft Forever on the Steam Deck behind a loading screen",
+  "name": "wow-splash",
+  "version": "1.5.0",
+  "description": "Launch World of Warcraft Forever on the Steam Deck behind a loading screen",
   "type": "module",
   "scripts": {
     "build": "rollup -c",
@@ -10,10 +10,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AstroPhyzix/decky-wow-splash.git"
+    "url": "git+https://github.com/AstroPhyzix/wow-splash.git"
   },
   "keywords": [
-    "decky",
     "plugin",
     "steam-deck",
     "world-of-warcraft",
@@ -22,9 +21,9 @@
   "author": "AstroPhyzix",
   "license": "BSD-3-Clause",
   "bugs": {
-    "url": "https://github.com/AstroPhyzix/decky-wow-splash/issues"
+    "url": "https://github.com/AstroPhyzix/wow-splash/issues"
   },
-  "homepage": "https://github.com/AstroPhyzix/decky-wow-splash#readme",
+  "homepage": "https://github.com/AstroPhyzix/wow-splash#readme",
   "devDependencies": {
     "@decky/rollup": "^1.0.2",
     "@decky/ui": "^4.11.0",

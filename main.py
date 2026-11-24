@@ -8,11 +8,14 @@ import decky
 
 # Steam launch options point at this wrapper, kept outside the plugin folder so the game
 # still starts (without a splash) if the plugin is ever removed.
-LAUNCHER = os.path.join(decky.DECKY_USER_HOME, ".local", "share", "decky-wow-splash", "launch.sh")
+LAUNCHER = os.path.join(decky.DECKY_USER_HOME, ".local", "share", "wow-splash", "launch.sh")
+# Before 1.5 the plugin, its wrapper and its folders had a longer name.
+OLD_NAME = "decky-wow-splash"
+OLD_LAUNCHER = os.path.join(decky.DECKY_USER_HOME, ".local", "share", OLD_NAME, "launch.sh")
 SETTINGS = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "settings.json")
 
 LAUNCHER_SCRIPT = """#!/bin/bash
-# WoW Splash (Decky plugin) launch wrapper. Steam launch options: "<this file>" <appid> %command%
+# WoW Splash launch wrapper. Steam launch options: "<this file>" <appid> %command%
 # While the plugin is installed: shows the splash and starts Battle.net through the plugin's
 # wow-splash.bat (in "launch" mode it also makes Battle.net start WoW). Without the plugin it
 # just runs the shortcut as it is.
@@ -94,6 +97,25 @@ def write_launcher():
     decky.logger.info(f"wrote {LAUNCHER}")
 
 
+def migrate_old_dirs():
+    """Carry settings, timings and the launch log over from the old plugin name. The old
+    wrapper is kept as a forwarder until the panel has moved every shortcut to the new one."""
+    home = os.path.join(decky.DECKY_USER_HOME, "homebrew")
+    for kind, new in (("settings", decky.DECKY_PLUGIN_SETTINGS_DIR), ("data", decky.DECKY_PLUGIN_RUNTIME_DIR)):
+        old = os.path.join(home, kind, OLD_NAME)
+        if not os.path.isdir(old) or os.path.abspath(old) == os.path.abspath(new):
+            continue
+        os.makedirs(new, exist_ok=True)
+        for f in os.listdir(old):
+            if not os.path.exists(os.path.join(new, f)):
+                shutil.copy2(os.path.join(old, f), os.path.join(new, f))
+        shutil.rmtree(old, ignore_errors=True)
+        decky.logger.info(f"moved {old} -> {new}")
+    if os.path.isfile(OLD_LAUNCHER):
+        with open(OLD_LAUNCHER, "w") as f:
+            f.write(f'#!/bin/bash\nexec "{LAUNCHER}" "$@"\n')
+
+
 def splash_pids():
     pids = []
     for pid in os.listdir("/proc"):
@@ -170,6 +192,11 @@ class Plugin:
                 decky.logger.warning(f"wow_shortcuts: {sc}: {e}")
         return found
 
+    async def drop_old_launcher(self):
+        """Called once no shortcut uses the old wrapper path any more."""
+        shutil.rmtree(os.path.dirname(OLD_LAUNCHER), ignore_errors=True)
+        return True
+
     async def set_mode(self, appid: int, mode: str):
         data = load_settings()
         data["apps"][str(appid)] = {"mode": "splash" if mode == "splash" else "launch"}
@@ -204,7 +231,7 @@ class Plugin:
                          for d in (os.listdir("/sys/class/hidraw") if os.path.isdir("/sys/class/hidraw") else []))
         return {
             "plugin": decky.DECKY_PLUGIN_VERSION,
-            "decky": decky.DECKY_VERSION,
+            "loader": decky.DECKY_VERSION,
             "os": f"{osr.get('PRETTY_NAME', '?').strip(chr(34))} {osr.get('VERSION_ID', '')} build {osr.get('BUILD_ID', '?')}".strip(),
             "xdotool": bool(shutil.which("xdotool")),
             "deck_controller": controller,
@@ -213,6 +240,7 @@ class Plugin:
         }
 
     async def _main(self):
+        migrate_old_dirs()
         data = load_settings()   # 1.2 settings (auto: true/false) -> mode
         if any("mode" not in v for v in data["apps"].values()):
             data["apps"] = {k: {"mode": app_mode(v)} for k, v in data["apps"].items()}
