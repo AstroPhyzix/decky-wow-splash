@@ -11,8 +11,6 @@ console, the Battle.net windows or the flicker between them.
 
 - **Launch WoW directly:** press Play in Steam and you land in WoW. The plugin starts
   Battle.net and tells it to start WoW Forever. You don't need to touch the Battle.net window.
-- **Splash only (optional):** covers Battle.net while it loads and signs in, then gets out of
-  the way so you can press Play yourself.
 - **The real loading steps, not a fake timer:** Starting Proton → Launching Battle.net →
   Signing in to Battle.net → Waiting for World of Warcraft to start → Loading World of Warcraft.
   The progress bar is timed from your last 5 launches.
@@ -47,10 +45,7 @@ loader's settings (Developer mode → Install plugin from ZIP file).
    works: the plugin finds the shortcut by checking its program and Proton prefix for
    Battle.net or WoW Forever.
 2. Install WoW Forever from Battle.net once and sign in with "Keep me logged in".
-3. Open the Quick Access menu → plug icon → **WoW Splash** and turn the splash on for your
-   shortcut.
-4. Leave **Launch WoW directly** on to go straight into the game, or turn it off for splash
-   only.
+3. Open the Quick Access menu → plug icon → **WoW Splash** and turn on **Splash screen**.
 
 ## How it works
 

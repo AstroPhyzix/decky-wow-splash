@@ -117,36 +117,24 @@ async function reportProblem(list: Shortcut[]) {
   Navigation.NavigateToExternalWeb(url());
 }
 
-function ShortcutRow({ sc, info, onChange }: { sc: Shortcut; info: Info; onChange: () => void }) {
-  const enabled = hasSplash(sc.options);
-  const launch = (info.apps[String(sc.appid)]?.mode ?? "launch") === "launch";
-  const toggle = (on: boolean) => {
+function ShortcutRow({ sc, info, onChange, named }: { sc: Shortcut; info: Info; onChange: () => void; named: boolean }) {
+  const toggle = async (on: boolean) => {
     const opts = on ? withSplash(sc.options, info.launcher, sc.appid) : withoutSplash(sc.options);
+    if (on) await setMode(sc.appid, "launch");
     SteamClient.Apps.SetAppLaunchOptions(sc.appid, opts);
-    toaster.toast({ title: "WoW Splash", body: `${on ? "On" : "Off"} for ${sc.name}` });
+    toaster.toast({ title: "WoW Splash", body: on ? "Splash on" : "Splash off" });
     setTimeout(onChange, 300);
   };
 
   return (
-    <>
-      <PanelSectionRow>
-        <ToggleField label={sc.name} checked={enabled} onChange={toggle} />
-      </PanelSectionRow>
-      {enabled && (
-        <PanelSectionRow>
-          <ToggleField
-            label="Launch WoW directly"
-            description={
-              launch
-                ? "Starts Battle.net and WoW. The splash stays until the game window opens."
-                : "Splash only: covers Battle.net while it loads and signs in, then you press Play."
-            }
-            checked={launch}
-            onChange={(v) => setMode(sc.appid, v ? "launch" : "splash").then(onChange)}
-          />
-        </PanelSectionRow>
-      )}
-    </>
+    <PanelSectionRow>
+      <ToggleField
+        label="Splash screen"
+        description={named ? sc.name : undefined}
+        checked={hasSplash(sc.options)}
+        onChange={toggle}
+      />
+    </PanelSectionRow>
   );
 }
 
@@ -193,7 +181,7 @@ function Content() {
 
   return (
     <>
-      <PanelSection title="Show a splash for">
+      <PanelSection>
         {list.length === 0 && (
           <PanelSectionRow>
             <Field
@@ -203,7 +191,7 @@ function Content() {
           </PanelSectionRow>
         )}
         {list.map((sc) => (
-          <ShortcutRow key={sc.appid} sc={sc} info={info} onChange={load} />
+          <ShortcutRow key={sc.appid} sc={sc} info={info} onChange={load} named={list.length > 1} />
         ))}
       </PanelSection>
       <PanelSection title="Help">
