@@ -9,7 +9,6 @@ import decky
 # still starts (without a splash) if the plugin is ever removed.
 LAUNCHER = os.path.join(decky.DECKY_USER_HOME, ".local", "share", "decky-wow-splash", "launch.sh")
 SETTINGS = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "settings.json")
-STEAM_ROOTS = [".local/share/Steam", ".steam/steam", ".var/app/com.valvesoftware.Steam/data/Steam"]
 
 LAUNCHER_SCRIPT = """#!/bin/bash
 # WoW Splash (Decky plugin) launch wrapper. Steam launch options: "<this file>" <appid> %command%
@@ -95,22 +94,6 @@ class Plugin:
         data["apps"].setdefault(str(appid), {})["auto"] = bool(auto)
         save_settings(data)
         return data["apps"]
-
-    async def art_status(self, appid: int):
-        """Which of the shortcut's hero / logo images exist in Steam's grid folders."""
-        found = {"hero": False, "logo": False}
-        for root in STEAM_ROOTS:
-            udir = os.path.join(decky.DECKY_USER_HOME, root, "userdata")
-            try:
-                users = os.listdir(udir)
-            except OSError:
-                continue
-            for u in users:
-                for kind in found:
-                    for ext in ("png", "jpg", "jpeg", "webp"):
-                        if os.path.isfile(os.path.join(udir, u, "config", "grid", f"{appid}_{kind}.{ext}")):
-                            found[kind] = True
-        return found
 
     async def splash_running(self):
         return bool(splash_pids())

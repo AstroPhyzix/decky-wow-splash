@@ -6,11 +6,11 @@
   "publish": {
     "tags": [
       "wow",
+      "wow-forever",
       "splash",
-      "battle.net",
-      "launcher"
+      "battle.net"
     ],
-    "description": "A World of Warcraft loading screen that covers the Proton console and Battle.net windows while WoW starts.",
-    "image": "https://raw.githubusercontent.com/AstroPhyzix/decky-wow-splash/main/assets/preview.png"
+    "description": "A World of Warcraft Forever loading screen that hides the Proton console and Battle.net windows while the game starts.",
+    "image": "https://raw.githubusercontent.com/AstroPhyzix/decky-wow-splash/main/assets/thumbnail.jpg"
   }
 }

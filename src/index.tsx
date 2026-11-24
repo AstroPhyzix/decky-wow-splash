@@ -13,11 +13,9 @@ import { FaImage } from "react-icons/fa";
 
 type Info = { launcher: string; apps: Record<string, { auto?: boolean }> };
 type Shortcut = { appid: number; name: string; options: string };
-type Art = { hero: boolean; logo: boolean };
 
 const getInfo = callable<[], Info>("get_info");
 const setAuto = callable<[appid: number, auto: boolean], Info["apps"]>("set_auto");
-const artStatus = callable<[appid: number], Art>("art_status");
 const closeSplash = callable<[], number>("close_splash");
 const bugReport = callable<[], Record<string, any>>("bug_report");
 
@@ -110,20 +108,12 @@ async function reportProblem(list: Shortcut[]) {
 function ShortcutRow({ sc, info, onChange }: { sc: Shortcut; info: Info; onChange: () => void }) {
   const enabled = hasSplash(sc.options);
   const auto = !!info.apps[String(sc.appid)]?.auto;
-  const [art, setArt] = useState<Art | null>(null);
-
-  useEffect(() => {
-    if (enabled) artStatus(sc.appid).then(setArt);
-  }, [enabled, sc.appid]);
-
   const toggle = (on: boolean) => {
     const opts = on ? withSplash(sc.options, info.launcher, sc.appid) : withoutSplash(sc.options);
     SteamClient.Apps.SetAppLaunchOptions(sc.appid, opts);
     toaster.toast({ title: "WoW Splash", body: `${on ? "On" : "Off"} for ${sc.name}` });
     setTimeout(onChange, 300);
   };
-
-  const missing = art ? (["hero", "logo"] as const).filter((k) => !art[k]) : [];
 
   return (
     <>
@@ -137,14 +127,6 @@ function ShortcutRow({ sc, info, onChange }: { sc: Shortcut; info: Info; onChang
             description="Off: the splash steps aside while Battle.net waits for you to press Play."
             checked={auto}
             onChange={(v) => setAuto(sc.appid, v).then(onChange)}
-          />
-        </PanelSectionRow>
-      )}
-      {enabled && missing.length > 0 && (
-        <PanelSectionRow>
-          <Field
-            label={`No ${missing.join(" or ")} artwork`}
-            description="Set it in the game's Properties or with SteamGridDB; the splash uses the shortcut's own art."
           />
         </PanelSectionRow>
       )}

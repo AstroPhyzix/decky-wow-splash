@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
-"""WoW launch splash (Decky plugin "WoW Splash").
+"""WoW Forever launch splash (Decky plugin "WoW Splash").
 
 Started by the plugin's launch wrapper (Steam launch options: `launch.sh <appid> %command%`).
 Covers the Proton console / Battle.net windows until WoW's own window is up. Steps aside
-while the Battle.net login window stays open and, unless Battle.net starts the game by
-itself, while Battle.net waits for the player to press Play.
-
-Works with any WoW flavor (Wow.exe, WowClassic.exe, ...) wherever it is installed: the
-game folder is found from the running Wow*.exe process. Art = the shortcut's own hero and
-logo images from Steam's grid folder (e.g. set with SteamGridDB), else the bundled art/.
-Any large Battle.net window (login, update, EULA, Install...) that stays up sends the
-splash aside too, so a fresh install still works. Holding View + Menu on the Deck's
-controller closes the splash (read from its hidraw device, nothing is sent anywhere).
+for Battle.net windows that need the player (login, update, EULA, Install, Play) and comes
+back when Wow.exe starts. The game folder (for gx.log) is found from the running Wow.exe,
+so WoW can be installed anywhere. Art is bundled in art/. Holding View + Menu on the
+Deck's controller closes the splash (read from its hidraw device).
 
 Progress is stage based (processes / log lines / windows seen), interpolated with the
 average timings of the last 5 launches, and smoothed so the bar never stalls.
@@ -30,7 +25,6 @@ import ctypes
 import ctypes.util
 import json
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -45,39 +39,26 @@ gi.require_version("GdkX11", "3.0")
 from gi.repository import Gtk, Gdk, GdkPixbuf, GLib, GdkX11  # noqa: E402
 import cairo  # noqa: E402
 
-def _appid_arg():
-    for a in sys.argv[1:]:
-        if a.isdigit():
-            return int(a)
-    for var in ("SteamGameId", "SteamAppId"):   # shortcut game ids keep the app id in the top 32 bits
-        v = os.environ.get(var, "")
-        if v.isdigit() and int(v):
-            return int(v) >> 32 if int(v) > 0xFFFFFFFF else int(v)
-    return 0
-
-
-APPID = _appid_arg()
+APPID = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 0
 # gamescope draws an override-redirect popup over the focus window when their app ids
 # match (Wine's tiny "Battle.net" popups). The splash gets its own id so none qualify;
 # the focus pin matches by window id, so it still keeps the splash in front.
 SPLASH_APPID = (APPID + 1) & 0xFFFFFFFF
 TIMEOUT = 150      # step aside for good if WoW isn't running by then (not counting time aside)
 LOGIN_GRACE = 6    # auto-login flashes the login window ~3s; only step aside if it stays
-PLAY_GRACE = 2     # Battle.net main window up this long without the game -> waiting for Play
+PLAY_GRACE = 2     # manual mode: a big Battle.net window up this long = waiting for Play
 GONE_GRACE = 5     # Battle.net and the game both gone this long -> the launch was closed
 DATA_DIR = os.environ.get("WOW_SPLASH_DATA") or os.path.expanduser("~/.local/share/decky-wow-splash")
 SETTINGS = os.path.join(os.environ.get("WOW_SPLASH_SETTINGS") or DATA_DIR, "settings.json")
 TIMINGS = os.path.join(DATA_DIR, f"timings-{APPID}.json")
 REPORT = os.path.join(DATA_DIR, "last-launch.json")
-BUNDLED_ART = os.path.join(os.path.dirname(os.path.abspath(__file__)), "art")
+ART = os.path.join(os.path.dirname(os.path.abspath(__file__)), "art")
 STUCK_GRACE = 20   # auto mode: a big Battle.net window up this long = it needs the player
 CLOSE_HOLD = 1.5   # hold View + Menu this long to close the splash
 WOW_WINDOW = "^World of Warcraft$"
 LOGIN_WINDOW = "Battle.net Login|^Log In$|Login$"
-BNET_WINDOW = "^Battle.net$"
 BNET_CLASS = "battle\\.net"          # Wine's WM_CLASS = exe name; xdotool matches case-insensitively
 MIN_W, MIN_H = 300, 200               # smaller Battle.net windows are popups/tooltips
-STEAM_ROOTS = ["~/.local/share/Steam", "~/.steam/steam", "~/.var/app/com.valvesoftware.Steam/data/Steam"]
 
 
 def app_settings():
@@ -89,39 +70,13 @@ def app_settings():
         return {}
 
 
-def find_art(kind):
-    """The shortcut's grid image (kind = "hero" or "logo"), newest across Steam users."""
-    best = None
-    for root in dict.fromkeys(os.path.realpath(os.path.expanduser(r)) for r in STEAM_ROOTS):
-        udir = os.path.join(root, "userdata")
-        try:
-            users = os.listdir(udir)
-        except OSError:
-            continue
-        for u in users:
-            for ext in ("png", "jpg", "jpeg", "webp"):
-                f = os.path.join(udir, u, "config", "grid", f"{APPID}_{kind}.{ext}")
-                try:
-                    m = os.stat(f).st_mtime
-                except OSError:
-                    continue
-                if best is None or m > best[0]:
-                    best = (m, f)
-    if best:
-        return best[1]
-    for ext in ("png", "jpg"):
-        f = os.path.join(BUNDLED_ART, f"{kind}.{ext}")
-        if os.path.isfile(f):
-            return f
-    return None
-
 # Milestones in order: (key, status text shown while waiting for the NEXT one,
 # default seconds from Play; replaced by the average of recent launches).
 MILESTONES = [
     ("start",  "Starting…",                    0),
     ("wine",   "Starting Battle.net…",         3),    # explorer.exe
     ("bnet",   "Launching World of Warcraft…", 7),    # Battle.net.exe / Agent.exe
-    ("wow",    "Loading World of Warcraft…",   17),   # Wow*.exe
+    ("wow",    "Loading World of Warcraft…",   17),   # Wow.exe
     ("gfx",    "Opening World of Warcraft…",   24),   # gx.log: graphics device created
     ("window", "Ready",                        25),   # WoW window visible -> close splash
 ]
@@ -149,15 +104,9 @@ START = time.monotonic()
 
 
 # ---------- probes (cheap: /proc, one file, one xdotool call) ----------
-def is_wow(comm):
-    """Wow.exe, WowClassic.exe, WowT.exe, WowB.exe, ... (comm is cut at 15 chars)."""
-    c = comm.lower()
-    return c.startswith("wow") and c.endswith(".exe")
-
-
 def procs():
     """Names of the launch-relevant processes running: explorer.exe, Agent.exe,
-    Battle.net.exe and "Wow.exe" (any flavor). Also remembers a game pid in procs.wow_pid."""
+    Battle.net.exe and Wow.exe. Also remembers the game's pid in procs.wow_pid."""
     found = set()
     procs.wow_pid = None
     for pid in os.listdir("/proc"):
@@ -166,11 +115,10 @@ def procs():
         try:
             with open(f"/proc/{pid}/comm") as f:
                 comm = f.read().strip()
-            if comm in ("explorer.exe", "Agent.exe"):
+            if comm in ("explorer.exe", "Agent.exe", "Wow.exe"):
                 found.add(comm)
-            elif is_wow(comm):
-                found.add("Wow.exe")
-                procs.wow_pid = pid
+                if comm == "Wow.exe":
+                    procs.wow_pid = pid
             elif comm == "CrBrowserMain" or comm.startswith("Battle.net"):
                 with open(f"/proc/{pid}/cmdline", "rb") as f:
                     if b"Battle.net.exe" in f.read():
@@ -209,7 +157,7 @@ def big_bnet_windows():
 
 
 def game_dir(pid):
-    """Unix folder of the running Wow*.exe: its cwd, else its Windows path mapped through
+    """Unix folder of the running Wow.exe (`.../_forever_`): its cwd, else its Windows path mapped through
     the Wine prefix (WINEPREFIX / STEAM_COMPAT_DATA_PATH from its environment)."""
     try:
         cwd = os.readlink(f"/proc/{pid}/cwd")
@@ -241,7 +189,7 @@ def game_dir(pid):
 
 def gfx_ready(since):
     """gx.log from this launch says the graphics device is up (written live, unlike
-    General.log). Unknown folder or flavor without it: the window milestone covers it."""
+    General.log). Folder not found: the window milestone covers it."""
     pid = procs.wow_pid
     d = gfx_ready.dirs.get(pid) if pid else None
     if pid and pid not in gfx_ready.dirs:
@@ -566,7 +514,7 @@ def save_timings(reached):
 # ---------- window ----------
 class Splash(Gtk.Window):
     def __init__(self):
-        super().__init__(title="World of Warcraft",
+        super().__init__(title="WoW Forever Splash",
                          type=Gtk.WindowType.TOPLEVEL if GAMING_MODE else Gtk.WindowType.POPUP)
         self.focus = FocusPin(STEAM_DISPLAY) if GAMING_MODE else NoPin()
         self.t0 = time.monotonic()
@@ -579,7 +527,6 @@ class Splash(Gtk.Window):
         self.seen = {}                 # aside reason -> since when its window is up
         self.aside_at = None           # set while hidden (login window / waiting for Play)
         self.gone_since = None         # Battle.net and the game both gone since
-        self.xdotool = bool(shutil.which("xdotool"))
         self.result = "closed"
         self.ticks = 0
         self.shown = 0.0               # smoothed percentage drawn on screen
@@ -589,8 +536,8 @@ class Splash(Gtk.Window):
         log("gaming mode", GAMING_MODE, "display", os.environ.get("DISPLAY"), "appid", APPID,
             "auto", self.auto)
 
-        self.hero = self.load_art("hero")
-        self.logo = self.load_art("logo")
+        self.hero = GdkPixbuf.Pixbuf.new_from_file(os.path.join(ART, "hero.jpg"))
+        self.logo = GdkPixbuf.Pixbuf.new_from_file(os.path.join(ART, "logo.png"))
         self.bg_cache = None  # (w, h, surface)
 
         self.set_decorated(False)
@@ -613,16 +560,6 @@ class Splash(Gtk.Window):
         self.combo = CloseCombo(lambda: self.finish("closed with View + Menu"))
         GLib.timeout_add(33, self.tick_anim)
         GLib.timeout_add(500, self.tick_state)
-
-    @staticmethod
-    def load_art(kind):
-        path = find_art(kind)
-        log(kind, path)
-        try:
-            return GdkPixbuf.Pixbuf.new_from_file(path) if path else None
-        except GLib.Error as e:
-            log(kind, "unreadable:", e)
-            return None
 
     def xid(self):
         return self.get_window().get_xid()
@@ -668,11 +605,8 @@ class Splash(Gtk.Window):
         self.reach("wow")
         if gfx_ready(self.wall0):
             self.reach("gfx")
-        if self.xdotool:
-            if visible_windows(WOW_WINDOW):
-                self.reach("window")
-        elif self.elapsed() - self.stage_at > (1.5 if KEYS[self.stage] == "gfx" else 12):
-            self.reach("window")    # no xdotool: can't see windows, go by time instead
+        if visible_windows(WOW_WINDOW):
+            self.reach("window")
         return True
 
     def window_up(self, reason, regex, grace):
@@ -689,7 +623,7 @@ class Splash(Gtk.Window):
         right away unless Battle.net starts the game by itself, else after STUCK_GRACE.
         That time isn't load time. Back as soon as the game starts."""
         why = None
-        if self.xdotool and BNET <= self.stage < WOW:
+        if BNET <= self.stage < WOW:
             if self.window_up("login", LOGIN_WINDOW, LOGIN_GRACE):
                 why = "login"
             elif self.window_up_ids("bnet", big_bnet_windows(), STUCK_GRACE if self.auto else PLAY_GRACE):
@@ -794,16 +728,9 @@ class Splash(Gtk.Window):
             cr.paint()
             cr.restore()
 
-        if self.hero:
-            hw, hh = self.hero.get_width(), self.hero.get_height()
-            s = max(w / hw, h / hh)
-            paint_pixbuf(self.hero, s, (w - hw * s) / 2, (h - hh * s) / 2)
-        else:   # no hero art set: a dark blue glow
-            g = cairo.RadialGradient(w / 2, h * 0.36, 0, w / 2, h * 0.36, max(w, h) * 0.7)
-            g.add_color_stop_rgb(0, 0.10, 0.16, 0.30)
-            g.add_color_stop_rgb(1, 0.01, 0.02, 0.05)
-            cr.set_source(g)
-            cr.paint()
+        hw, hh = self.hero.get_width(), self.hero.get_height()
+        s = max(w / hw, h / hh)
+        paint_pixbuf(self.hero, s, (w - hw * s) / 2, (h - hh * s) / 2)
 
         g = cairo.LinearGradient(0, 0, 0, h)
         g.add_color_stop_rgba(0, 0, 0, 0, 0.35)
@@ -812,18 +739,9 @@ class Splash(Gtk.Window):
         cr.set_source(g)
         cr.paint()
 
-        if self.logo:
-            lw, lh = self.logo.get_width(), self.logo.get_height()
-            s = min(w * 0.42 / lw, h * 0.48 / lh)
-            paint_pixbuf(self.logo, s, (w - lw * s) / 2, h * 0.36 - lh * s / 2)
-        else:   # no logo art set: the name in gold
-            cr.select_font_face("Serif", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
-            cr.set_font_size(h * 0.075)
-            text = "World of Warcraft"
-            ext = cr.text_extents(text)
-            cr.move_to((w - ext.x_advance) / 2, h * 0.38)
-            cr.set_source_rgb(1, 0.82, 0.35)
-            cr.show_text(text)
+        lw, lh = self.logo.get_width(), self.logo.get_height()
+        s = min(w * 0.42 / lw, h * 0.48 / lh)
+        paint_pixbuf(self.logo, s, (w - lw * s) / 2, h * 0.36 - lh * s / 2)
 
         self.bg_cache = (w, h, surf)
         return surf

@@ -1,7 +1,7 @@
 {
   "name": "decky-wow-splash",
-  "version": "1.1.0",
-  "description": "Decky plugin: WoW launch splash screen for Steam Deck",
+  "version": "1.2.0",
+  "description": "Decky plugin: World of Warcraft Forever launch splash for Steam Deck",
   "type": "module",
   "scripts": {
     "build": "rollup -c",
@@ -16,7 +16,8 @@
     "decky",
     "plugin",
     "steam-deck",
-    "world-of-warcraft"
+    "world-of-warcraft",
+    "wow-forever"
   ],
   "author": "AstroPhyzix",
   "license": "BSD-3-Clause",
