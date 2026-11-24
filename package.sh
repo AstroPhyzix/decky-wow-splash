@@ -9,5 +9,5 @@ rm -rf out && mkdir -p "out/$NAME"
 cp -r dist main.py plugin.json package.json LICENSE README.md "out/$NAME/"
 cp -r defaults/. "out/$NAME/"
 find "out/$NAME" -name __pycache__ -prune -exec rm -rf {} +
-(cd out && zip -qr "$NAME-v$VER.zip" "$NAME")
+(cd out && zip -qr "$NAME-v$VER.zip" "$NAME" && cp "$NAME-v$VER.zip" "$NAME.zip")
 echo "out/$NAME-v$VER.zip"

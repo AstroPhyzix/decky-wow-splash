@@ -22,10 +22,30 @@ console, the Battle.net windows or the flicker between them.
   menu.
 - Works in Gaming Mode and Desktop Mode. No root access needed.
 
+## Install
+
+Needs [Decky Loader](https://decky.xyz). In Desktop Mode, open Konsole and run:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AstroPhyzix/decky-wow-splash/main/install.sh | sh
+```
+
+It asks for your sudo password (Decky's plugin folder belongs to root). If you never set one,
+run `passwd` first. Run the same line again to update. To remove it:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/AstroPhyzix/decky-wow-splash/main/install.sh | sh -s -- --uninstall
+```
+
+You can also download `decky-wow-splash.zip` from
+[Releases](https://github.com/AstroPhyzix/decky-wow-splash/releases) and install it from
+Decky's settings (Developer mode → Install plugin from ZIP file).
+
 ## Setup
 
-1. Install Battle.net in a Proton prefix and add it to Steam as a non-Steam game (the shortcut
-   name must contain "WoW", "Warcraft" or "Battle.net").
+1. Install Battle.net in a Proton prefix and add it to Steam as a non-Steam game. Any name
+   works: the plugin finds the shortcut by checking its program and Proton prefix for
+   Battle.net or WoW Forever.
 2. Install WoW Forever from Battle.net once and sign in with "Keep me logged in".
 3. Open the Quick Access menu → Decky → **WoW Splash** and turn the splash on for your
    shortcut.

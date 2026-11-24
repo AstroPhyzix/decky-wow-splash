@@ -16,6 +16,9 @@ type Info = { launcher: string; apps: Record<string, { mode?: Mode }> };
 type Shortcut = { appid: number; name: string; options: string };
 
 const getInfo = callable<[], Info>("get_info");
+const wowShortcuts = callable<[shortcuts: { appid: number; exe: string; startdir: string }[]], number[]>(
+  "wow_shortcuts",
+);
 const setMode = callable<[appid: number, mode: Mode], Info["apps"]>("set_mode");
 const closeSplash = callable<[], number>("close_splash");
 const bugReport = callable<[], Record<string, any>>("bug_report");
@@ -27,7 +30,6 @@ const MAX_URL = 7500; // GitHub rejects much longer new-issue links
 declare const appStore: any;
 
 const SHORTCUT = 1073741824; // app_type of non-Steam shortcuts
-const LOOKS_LIKE_WOW = /warcraft|battle\.?net|\bwow\b/i;
 // Our wrapper in launch options: "<...>/decky-wow-splash/launch.sh" <appid>
 const WRAPPER = /"[^"]*\/decky-wow-splash\/launch\.sh"\s+\d+\s+/g;
 
@@ -38,20 +40,26 @@ function shortcuts(): { appid: number; name: string }[] {
     .sort((a: any, b: any) => a.name.localeCompare(b.name));
 }
 
-function launchOptions(appid: number): Promise<string> {
+type Details = { options: string; exe: string; startdir: string };
+
+function appDetails(appid: number): Promise<Details> {
   return new Promise((resolve) => {
     let done = false;
     const reg = SteamClient.Apps.RegisterForAppDetails(appid, (d: any) => {
       if (done) return;
       done = true;
       reg.unregister();
-      resolve(d?.strLaunchOptions ?? "");
+      resolve({
+        options: d?.strLaunchOptions ?? "",
+        exe: d?.strShortcutExe ?? "",
+        startdir: d?.strShortcutStartDir ?? "",
+      });
     });
     setTimeout(() => {
       if (!done) {
         done = true;
         reg.unregister();
-        resolve("");
+        resolve({ options: "", exe: "", startdir: "" });
       }
     }, 3000);
   });
@@ -145,12 +153,11 @@ function Content() {
 
   const load = async () => {
     const i = await getInfo();
-    const filtered = shortcuts().filter((s) => LOOKS_LIKE_WOW.test(s.name));
-    const withOpts = await Promise.all(
-      filtered.map(async (s) => ({ ...s, options: await launchOptions(s.appid) })),
-    );
+    // A shortcut counts as WoW if its program or Proton prefix holds WoW Forever / Battle.net.
+    const all = await Promise.all(shortcuts().map(async (s) => ({ ...s, ...(await appDetails(s.appid)) })));
+    const wow = new Set(await wowShortcuts(all.map(({ appid, exe, startdir }) => ({ appid, exe, startdir }))));
     setInfo(i);
-    setList(withOpts);
+    setList(all.filter((s) => wow.has(s.appid)).map(({ appid, name, options }) => ({ appid, name, options })));
   };
 
   useEffect(() => {
@@ -174,7 +181,7 @@ function Content() {
           <PanelSectionRow>
             <Field
               label="No WoW shortcut found"
-              description="Add Battle.net or WoW to Steam as a non-Steam game, with WoW or Battle.net in its name."
+              description="Add Battle.net to Steam as a non-Steam game and install WoW Forever in its Proton prefix."
             />
           </PanelSectionRow>
         )}

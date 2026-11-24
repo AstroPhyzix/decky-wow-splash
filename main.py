@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 import shutil
@@ -108,6 +109,43 @@ def splash_pids():
     return pids
 
 
+# Where a shortcut's Proton prefix can be: the main Steam library or one on an SD card / drive.
+COMPATDATA = [
+    os.path.join(decky.DECKY_USER_HOME, ".local", "share", "Steam", "steamapps", "compatdata"),
+    "/run/media/*/steamapps/compatdata",
+    "/run/media/*/*/steamapps/compatdata",
+]
+# Inside a Wine drive_c: what makes a prefix a WoW Forever one.
+WOW_MARKERS = [
+    ("Program Files (x86)", "World of Warcraft", "_forever_", "Wow.exe"),
+    ("Program Files (x86)", "Battle.net", "Battle.net Launcher.exe"),
+    ("Program Files", "World of Warcraft", "_forever_", "Wow.exe"),
+]
+
+
+def drive_c_of(path):
+    """The Wine drive_c a path lies in, or None."""
+    parts = os.path.normpath(path).split(os.sep)
+    if "drive_c" in parts:
+        return os.sep.join(parts[: len(parts) - parts[::-1].index("drive_c")])
+    return None
+
+
+def is_wow_shortcut(appid, exe, startdir):
+    """True if the shortcut runs WoW Forever / Battle.net: its exe or start dir is inside a
+    WoW install, or its Proton prefix (compatdata/<appid>) has one. Name doesn't matter."""
+    exe, startdir = (exe or "").strip().strip('"'), (startdir or "").strip().strip('"')
+    if os.path.basename(exe).lower() in ("wow.exe", "battle.net launcher.exe", "battle.net.exe"):
+        return True
+    roots = {drive_c_of(p) for p in (exe, startdir) if p}
+    for pattern in COMPATDATA:
+        roots.update(glob.glob(os.path.join(pattern, str(appid), "pfx", "drive_c")))
+    for root in filter(None, roots):
+        if any(os.path.isfile(os.path.join(root, *m)) for m in WOW_MARKERS):
+            return True
+    return False
+
+
 def read(path, limit=None):
     try:
         with open(path, errors="replace") as f:
@@ -120,6 +158,17 @@ class Plugin:
     async def get_info(self):
         apps = {k: {"mode": app_mode(v)} for k, v in load_settings()["apps"].items()}
         return {"launcher": LAUNCHER, "apps": apps}
+
+    async def wow_shortcuts(self, shortcuts: list):
+        """Of [{appid, exe, startdir}], the appids that point at WoW Forever / Battle.net."""
+        found = []
+        for sc in shortcuts:
+            try:
+                if is_wow_shortcut(int(sc["appid"]), sc.get("exe"), sc.get("startdir")):
+                    found.append(int(sc["appid"]))
+            except (KeyError, ValueError, OSError) as e:
+                decky.logger.warning(f"wow_shortcuts: {sc}: {e}")
+        return found
 
     async def set_mode(self, appid: int, mode: str):
         data = load_settings()
