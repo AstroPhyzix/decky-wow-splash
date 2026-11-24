@@ -78,7 +78,7 @@ MILESTONES = [
     ("bnet",   "Signing in to Battle.net…",             5),    # Battle.net.exe running
     ("ready",  "Waiting for World of Warcraft to start…", 12),  # Battle.net main window
     ("wow",    "Loading World of Warcraft…",            18),   # Wow.exe running
-    ("gfx",    "Opening the game window…",              26),   # gx.log: graphics device created
+    ("gfx",    "Loading World of Warcraft…",            26),   # gx.log: graphics device created
     ("window", "Ready",                                 30),   # WoW window visible -> close
 ]
 KEYS = [k for k, _, _ in MILESTONES]

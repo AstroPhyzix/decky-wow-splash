@@ -142,12 +142,10 @@ function ShortcutRow({ sc, info, onChange }: { sc: Shortcut; info: Info; onChang
 function Content() {
   const [info, setInfo] = useState<Info | null>(null);
   const [list, setList] = useState<Shortcut[]>([]);
-  const [showAll, setShowAll] = useState(false);
 
   const load = async () => {
     const i = await getInfo();
-    const all = shortcuts();
-    const filtered = showAll ? all : all.filter((s) => LOOKS_LIKE_WOW.test(s.name));
+    const filtered = shortcuts().filter((s) => LOOKS_LIKE_WOW.test(s.name));
     const withOpts = await Promise.all(
       filtered.map(async (s) => ({ ...s, options: await launchOptions(s.appid) })),
     );
@@ -157,7 +155,7 @@ function Content() {
 
   useEffect(() => {
     load();
-  }, [showAll]);
+  }, []);
 
   if (!info) {
     return (
@@ -176,18 +174,13 @@ function Content() {
           <PanelSectionRow>
             <Field
               label="No WoW shortcut found"
-              description="Add Battle.net or WoW to Steam as a non-Steam game, or show all shortcuts below."
+              description="Add Battle.net or WoW to Steam as a non-Steam game, with WoW or Battle.net in its name."
             />
           </PanelSectionRow>
         )}
         {list.map((sc) => (
           <ShortcutRow key={sc.appid} sc={sc} info={info} onChange={load} />
         ))}
-      </PanelSection>
-      <PanelSection>
-        <PanelSectionRow>
-          <ToggleField label="Show all non-Steam shortcuts" checked={showAll} onChange={setShowAll} />
-        </PanelSectionRow>
       </PanelSection>
       <PanelSection title="Help">
         <PanelSectionRow>
