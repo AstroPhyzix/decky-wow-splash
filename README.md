@@ -2,54 +2,84 @@
 
 ![WoW Splash](assets/thumbnail.jpg)
 
-A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin that shows a full-screen
-**World of Warcraft Forever** loading screen while the game starts on the Steam Deck. It hides
-the Proton console, the Battle.net windows and the flicker between them, and closes the moment
-WoW's own window opens.
+A [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader) plugin for playing
+**World of Warcraft Forever** on the Steam Deck. It launches the game straight from your Steam
+library and shows a full-screen loading screen the whole time, so you never see the Proton
+console, the Battle.net windows or the flicker between them.
 
-- WoW can be installed anywhere: the game folder is found from the running `Wow.exe`.
-- A progress bar driven by what is really happening (Wine, Battle.net, Wow.exe, graphics device,
-  game window), timed from your last 5 launches.
-- Steps aside for Battle.net windows that need you (login, update, license, Install, Play) and
-  comes back when the game starts, so a fresh install that isn't logged in yet works too.
-- Stuck? Hold **View + Menu** on the Deck for 1.5 s, or use **Close splash** in the plugin menu.
-- **Report a problem** opens a GitHub issue with your system info and the last launch filled in.
-  You review it before submitting; nothing is sent automatically.
-- Gaming Mode and Desktop Mode.
+## Features
 
-## Use
+- **Launch WoW directly:** press Play in Steam and you land in WoW. The plugin starts
+  Battle.net and tells it to start WoW Forever. You don't need to touch the Battle.net window.
+- **Splash only (optional):** covers Battle.net while it loads and signs in, then gets out of
+  the way so you can press Play yourself.
+- **The real loading steps, not a fake timer:** Starting Proton → Launching Battle.net →
+  Signing in to Battle.net → Waiting for World of Warcraft to start → Loading World of Warcraft.
+  The progress bar is timed from your last 5 launches.
+- **Steps aside when Battle.net needs you:** login screen, update, license, install. It comes
+  back when the game starts, so a fresh install that isn't signed in yet works too.
+- **Never traps you:** hold **View + Menu** for 1.5 s, or use **Close splash** in the plugin
+  menu.
+- Works in Gaming Mode and Desktop Mode. No root access needed.
 
-1. Add Battle.net to Steam as a non-Steam game and run it with Proton.
-2. Open the Quick Access menu → Decky → **WoW Splash**.
-3. Turn the splash on for your shortcut. Shortcuts with "Warcraft", "WoW" or "Battle.net" in the
-   name are listed; turn on **Show all non-Steam shortcuts** if yours has another name.
-4. If your shortcut starts the game by itself (e.g. a script that sends Battle.net
-   `--exec="launch WoWF"`), turn on **Battle.net starts WoW by itself**. Otherwise the splash
-   steps aside while Battle.net waits for you to press Play.
+## Setup
 
-Turning it on adds a small wrapper to the shortcut's launch options, keeping your other options:
+1. Install Battle.net in a Proton prefix and add it to Steam as a non-Steam game (the shortcut
+   name must contain "WoW", "Warcraft" or "Battle.net").
+2. Install WoW Forever from Battle.net once and sign in with "Keep me logged in".
+3. Open the Quick Access menu → Decky → **WoW Splash** and turn the splash on for your
+   shortcut.
+4. Leave **Launch WoW directly** on to go straight into the game, or turn it off for splash
+   only.
+
+## How it works
+
+Turning the splash on adds a small wrapper in front of the shortcut's launch options (your
+other options are kept):
 
 ```
 "/home/deck/.local/share/decky-wow-splash/launch.sh" <appid> %command%
 ```
 
-Turning it off removes it. The wrapper lives outside the plugin folder, so if you uninstall the
-plugin the game still starts (without the splash).
+When you press Play:
 
-## When the splash steps aside
+1. **The wrapper** reads the shortcut's mode and starts the splash. It then has Proton run the
+   plugin's `wow-splash.bat` in the shortcut's prefix instead of the shortcut's own program.
+   The bat starts `Battle.net Launcher.exe`. In *Launch WoW directly* mode it also sends
+   `Battle.net.exe --exec="launch WoWF"` every few seconds until `Wow.exe` is running, because
+   Battle.net ignores that command while it is still starting.
+2. **The splash** (`splash.py`, GTK) follows the launch from what it can see: processes
+   (`explorer.exe`, `Battle.net.exe`, `Wow.exe`), Battle.net's windows, WoW's `Logs/gx.log`
+   (graphics device ready) and finally the WoW window. It closes the moment that window opens,
+   or once Battle.net is ready in splash-only mode.
+3. **In Gaming Mode**, gamescope would switch focus to every new launcher window, which makes
+   the screen flash. The splash keeps itself in front by pinning gamescope's focus on Steam's
+   X display, and puts Steam's values back when it's done.
 
-| Battle.net window | "starts WoW by itself" off | on |
-|---|---|---|
-| Login | after 6 s | after 6 s |
-| Any other window of 300×200 or more (Play, update, Install...) | after 2 s | after 20 s |
+Turning the splash off removes the wrapper. The wrapper lives outside the plugin folder: if you
+uninstall the plugin, the shortcut still starts the way it did before.
 
-It comes back as soon as `Wow.exe` starts. Launches where it stepped aside aren't used for the
-progress timings.
+Files: `main.py` (backend: writes the wrapper, stores settings, closes the splash, collects
+bug-report info), `src/index.tsx` (Quick Access panel), `defaults/splash/` (splash, launch bat,
+art).
+
+## Report a problem
+
+1. Open the Quick Access menu → Decky → **WoW Splash** → **Report a problem**.
+2. A GitHub "new issue" page opens. It is pre-filled with your plugin, Decky and SteamOS versions,
+   your splash settings and a short log of your last launch.
+3. Describe what you saw (for example "the splash stayed up" or "Battle.net showed through"),
+   check the text, and submit. You need a GitHub account. Nothing is sent until you submit.
+
+You can also [open an issue](https://github.com/AstroPhyzix/decky-wow-splash/issues/new)
+yourself. If you do, say which mode you use and what you saw on screen.
 
 ## Requirements
 
-SteamOS 3. Uses the system `python3`, GTK 3, PyGObject, pycairo and `xdotool`, all part of
-SteamOS. No root access needed.
+SteamOS 3 with Decky Loader. Uses the system `python3`, GTK 3, PyGObject, pycairo and
+`xdotool`, all part of SteamOS. Battle.net must be installed in the default folder
+(`C:\Program Files (x86)\Battle.net`) of the shortcut's Proton prefix. If it isn't found, the
+shortcut runs as-is and only the splash is shown.
 
 ## Build
 
@@ -60,28 +90,19 @@ pnpm i
 
 Install the zip from Decky's settings (Developer → Install plugin from ZIP).
 
-Test the splash on the desktop with fake progress (`--preview-play` also fakes Battle.net
-waiting for Play):
+Test the splash on the desktop with a fake launch:
 
 ```
-python3 defaults/splash/splash.py --preview
+python3 defaults/splash/splash.py 0 --preview                 # Launch WoW directly
+python3 defaults/splash/splash.py 0 --preview --splash-only   # Splash only
 ```
-
-## How it works
-
-- `main.py` writes the launch wrapper, stores per-shortcut options, closes the splash and
-  gathers bug-report info.
-- `src/index.tsx` lists your shortcuts and edits their launch options.
-- `defaults/splash/splash.py` is the splash itself (GTK), with its art in `defaults/splash/art/`.
-  In Gaming Mode gamescope would switch focus to every new launcher window; the splash keeps
-  itself in front by pinning gamescope's base-layer window and app id on Steam's X display, and
-  puts Steam's values back when done.
 
 ## Credits
 
-Artwork from [SteamGridDB](https://www.steamgriddb.com/). World of Warcraft is a trademark of
-Blizzard Entertainment; this plugin is not affiliated with Blizzard.
+Artwork from [SteamGridDB](https://www.steamgriddb.com/). World of Warcraft and Battle.net are
+trademarks of Blizzard Entertainment; this plugin is not affiliated with or endorsed by Blizzard.
 
 ## License
 
-BSD-3-Clause, based on the [Decky plugin template](https://github.com/SteamDeckHomebrew/decky-plugin-template).
+[BSD-3-Clause](LICENSE), based on the
+[Decky plugin template](https://github.com/SteamDeckHomebrew/decky-plugin-template).

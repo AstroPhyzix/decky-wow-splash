@@ -10,7 +10,7 @@
       "splash",
       "battle.net"
     ],
-    "description": "A World of Warcraft Forever loading screen that hides the Proton console and Battle.net windows while the game starts.",
+    "description": "Launch World of Warcraft Forever straight from Steam behind a full-screen loading screen that hides the Proton console and Battle.net windows.",
     "image": "https://raw.githubusercontent.com/AstroPhyzix/decky-wow-splash/main/assets/thumbnail.jpg"
   }
 }
