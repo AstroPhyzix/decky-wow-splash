@@ -2,9 +2,12 @@
 """WoW Forever launch splash (Decky plugin "WoW Splash").
 
 Started by the plugin's launch wrapper (Steam launch options: `launch.sh <appid> %command%`).
-Covers the Proton console / Battle.net windows until WoW's own window is up. Steps aside
-for Battle.net windows that need the player (login, update, EULA, Install, Play) and comes
-back when Wow.exe starts. The game folder (for gx.log) is found from the running Wow.exe,
+Two modes (WOW_SPLASH_MODE, from the plugin's settings):
+  launch  the wrapper makes Battle.net start WoW; the splash covers everything until WoW's
+          window is up. Steps aside for Battle.net windows that need the player (login,
+          update, EULA...) and comes back when Wow.exe starts.
+  splash  covers the Proton console and Battle.net while it loads and signs in, and closes
+          once Battle.net's main window is up (the player presses Play). The game folder (for gx.log) is found from the running Wow.exe,
 so WoW can be installed anywhere. Art is bundled in art/. Holding View + Menu on the
 Deck's controller closes the splash (read from its hidraw device).
 
@@ -46,43 +49,42 @@ APPID = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 0
 SPLASH_APPID = (APPID + 1) & 0xFFFFFFFF
 TIMEOUT = 150      # step aside for good if WoW isn't running by then (not counting time aside)
 LOGIN_GRACE = 6    # auto-login flashes the login window ~3s; only step aside if it stays
-PLAY_GRACE = 2     # manual mode: a big Battle.net window up this long = waiting for Play
 GONE_GRACE = 5     # Battle.net and the game both gone this long -> the launch was closed
 DATA_DIR = os.environ.get("WOW_SPLASH_DATA") or os.path.expanduser("~/.local/share/decky-wow-splash")
-SETTINGS = os.path.join(os.environ.get("WOW_SPLASH_SETTINGS") or DATA_DIR, "settings.json")
 TIMINGS = os.path.join(DATA_DIR, f"timings-{APPID}.json")
 REPORT = os.path.join(DATA_DIR, "last-launch.json")
 ART = os.path.join(os.path.dirname(os.path.abspath(__file__)), "art")
-STUCK_GRACE = 20   # auto mode: a big Battle.net window up this long = it needs the player
+STUCK_GRACE = 20   # launch mode: a big Battle.net window up this long = it needs the player
 CLOSE_HOLD = 1.5   # hold View + Menu this long to close the splash
 WOW_WINDOW = "^World of Warcraft$"
+BNET_MAIN = "^Battle\\.net$"             # Battle.net's main window = signed in and loaded
 LOGIN_WINDOW = "Battle.net Login|^Log In$|Login$"
 BNET_CLASS = "battle\\.net"          # Wine's WM_CLASS = exe name; xdotool matches case-insensitively
 MIN_W, MIN_H = 300, 200               # smaller Battle.net windows are popups/tooltips
 
 
-def app_settings():
-    """This shortcut's options from the plugin: {"auto": bool} (Battle.net starts the game)."""
-    try:
-        with open(SETTINGS) as f:
-            return json.load(f).get("apps", {}).get(str(APPID), {})
-    except (OSError, ValueError, AttributeError):
-        return {}
+def launch_mode():
+    """"launch" (Battle.net is made to start WoW) or "splash" (only until Battle.net is up)."""
+    if "--splash-only" in sys.argv:
+        return "splash"
+    return "splash" if os.environ.get("WOW_SPLASH_MODE") == "splash" else "launch"
 
 
 # Milestones in order: (key, status text shown while waiting for the NEXT one,
 # default seconds from Play; replaced by the average of recent launches).
 MILESTONES = [
-    ("start",  "Starting…",                    0),
-    ("wine",   "Starting Battle.net…",         3),    # explorer.exe
-    ("bnet",   "Launching World of Warcraft…", 7),    # Battle.net.exe / Agent.exe
-    ("wow",    "Loading World of Warcraft…",   17),   # Wow.exe
-    ("gfx",    "Opening World of Warcraft…",   24),   # gx.log: graphics device created
-    ("window", "Ready",                        25),   # WoW window visible -> close splash
+    ("start",  "Starting Proton…",                      0),
+    ("wine",   "Launching Battle.net…",                 3),    # explorer.exe (Wine is up)
+    ("bnet",   "Signing in to Battle.net…",             5),    # Battle.net.exe running
+    ("ready",  "Waiting for World of Warcraft to start…", 12),  # Battle.net main window
+    ("wow",    "Loading World of Warcraft…",            18),   # Wow.exe running
+    ("gfx",    "Opening the game window…",              26),   # gx.log: graphics device created
+    ("window", "Ready",                                 30),   # WoW window visible -> close
 ]
 KEYS = [k for k, _, _ in MILESTONES]
 WOW = KEYS.index("wow")
 BNET = KEYS.index("bnet")
+READY = KEYS.index("ready")
 
 GAMING_MODE = bool(os.environ.get("GAMESCOPE_WAYLAND_DISPLAY")) or \
     os.environ.get("XDG_CURRENT_DESKTOP", "").lower() == "gamescope"
@@ -469,7 +471,7 @@ def write_report(why, splash):
         os.makedirs(DATA_DIR, exist_ok=True)
         with open(REPORT, "w") as f:
             json.dump({"time": time.strftime("%Y-%m-%d %H:%M:%S"), "appid": APPID,
-                       "gaming_mode": GAMING_MODE, "auto": splash.auto if splash else None,
+                       "gaming_mode": GAMING_MODE, "mode": splash.mode if splash else None,
                        "result": why, "reached": splash.reached if splash else {},
                        "log": LOG}, f, indent=1)
     except OSError:
@@ -523,7 +525,8 @@ class Splash(Gtk.Window):
         self.stage, self.stage_at = 0, 0.0
         self.reached = {}
         self.calibrate = True          # save timings unless the login window paused us
-        self.auto = app_settings().get("auto", False)   # Battle.net starts the game by itself
+        self.mode = launch_mode()
+        self.last = READY if self.mode == "splash" else len(KEYS) - 1   # closes at this milestone
         self.seen = {}                 # aside reason -> since when its window is up
         self.aside_at = None           # set while hidden (login window / waiting for Play)
         self.gone_since = None         # Battle.net and the game both gone since
@@ -534,7 +537,7 @@ class Splash(Gtk.Window):
         self.drawn_key = None          # what the bar strip last showed
         log("expected", {k: round(v, 1) for k, v in self.t.items()})
         log("gaming mode", GAMING_MODE, "display", os.environ.get("DISPLAY"), "appid", APPID,
-            "auto", self.auto)
+            "mode", self.mode)
 
         self.hero = GdkPixbuf.Pixbuf.new_from_file(os.path.join(ART, "hero.jpg"))
         self.logo = GdkPixbuf.Pixbuf.new_from_file(os.path.join(ART, "logo.png"))
@@ -592,8 +595,16 @@ class Splash(Gtk.Window):
         p = procs()
         if "explorer.exe" in p:
             self.reach("wine")
-        if "Battle.net.exe" in p or "Agent.exe" in p:
+        if "Battle.net.exe" in p:
             self.reach("bnet")
+        if BNET <= self.stage < READY:
+            self.log_bnet_windows()
+            if visible_windows(BNET_MAIN):
+                self.reach("ready")
+            elif self.mode == "splash" and self.window_up_ids(
+                    "other", [w for w in big_bnet_windows() if w not in visible_windows(LOGIN_WINDOW)], 3):
+                log("battle.net window up 3s (title not matched) -> ready")
+                self.reach("ready")
         if "Wow.exe" not in p:
             if self.stage >= WOW:
                 return False
@@ -608,6 +619,19 @@ class Splash(Gtk.Window):
         if visible_windows(WOW_WINDOW):
             self.reach("window")
         return True
+
+    def log_bnet_windows(self):
+        """Logs the titles of Battle.net's visible windows when they change (for bug reports)."""
+        names = []
+        for w in visible_windows(BNET_CLASS, "--classname"):
+            try:
+                names.append(subprocess.run(["xdotool", "getwindowname", str(w)], capture_output=True,
+                                            text=True, timeout=2).stdout.strip())
+            except Exception:
+                pass
+        if names != getattr(self, "bnet_names", None):
+            self.bnet_names = names
+            log("battle.net windows", names)
 
     def window_up(self, reason, regex, grace):
         """True once a window matching regex has been visible for `grace` seconds."""
@@ -626,7 +650,7 @@ class Splash(Gtk.Window):
         if BNET <= self.stage < WOW:
             if self.window_up("login", LOGIN_WINDOW, LOGIN_GRACE):
                 why = "login"
-            elif self.window_up_ids("bnet", big_bnet_windows(), STUCK_GRACE if self.auto else PLAY_GRACE):
+            elif self.mode == "launch" and self.window_up_ids("bnet", big_bnet_windows(), STUCK_GRACE):
                 why = "battle.net window"
         if why:
             self.calibrate = False
@@ -659,11 +683,11 @@ class Splash(Gtk.Window):
             self.finish("WoW closed" if self.stage >= WOW else "Battle.net closed")
         else:
             self.update_aside()
-            if KEYS[self.stage] == "window":
+            if self.stage >= self.last:
                 if self.calibrate:
                     save_timings(self.reached)
-                self.finish("WoW window open")
-            elif self.stage < WOW and self.aside_at is None and self.elapsed() > TIMEOUT:
+                self.finish("WoW window open" if self.mode == "launch" else "Battle.net ready")
+            elif self.stage < min(WOW, self.last) and self.aside_at is None and self.elapsed() > TIMEOUT:
                 self.finish("timeout before WoW started, stepping aside")
         return not self.done
 
@@ -681,11 +705,11 @@ class Splash(Gtk.Window):
 
     # ----- animation -----
     def target_pct(self):
-        if self.stage + 1 >= len(KEYS):
+        if self.stage >= self.last:
             return 100.0
         a, b = self.t[KEYS[self.stage]], self.t[KEYS[self.stage + 1]]
         frac = min(0.95, (self.elapsed() - self.stage_at) / max(0.5, b - a))
-        return (a + frac * (b - a)) / self.t[KEYS[-1]] * 100
+        return (a + frac * (b - a)) / self.t[KEYS[self.last]] * 100
 
     def tick_anim(self):
         """Smooths the bar; redraws only the bar strip, and only when what it shows changes."""
@@ -782,36 +806,34 @@ class Splash(Gtk.Window):
         cr.set_font_size(h * 0.024)
         cr.set_source_rgba(1, 1, 1, 0.85)
         cr.move_to(bx, text_y)
-        cr.show_text(MILESTONES[self.stage][1])
-
-        if self.combo.available():
-            cr.set_font_size(h * 0.018)
-            cr.set_source_rgba(1, 1, 1, 0.35)
-            hint = "Hold View + Menu to close"
-            cr.move_to((w - cr.text_extents(hint).x_advance) / 2, by + bh + h * 0.06)
-            cr.show_text(hint)
+        cr.show_text(self.status())
         return True
+
+    def status(self):
+        if self.stage == BNET and self.seen.get("login"):
+            return "Waiting for Battle.net sign-in…"
+        if self.stage == READY and self.mode == "splash":
+            return "Battle.net is ready"
+        return MILESTONES[self.stage][1]
 
 
 def fake_probes():
-    """--preview: a 15 s fake launch on the desktop, without touching real timings.
-    --preview-play also fakes Battle.net waiting for Play from 6 s to 12 s."""
+    """--preview: an 18 s fake launch on the desktop, without touching real timings.
+    Add --splash-only for the splash-only mode (closes at 9 s, when Battle.net is "ready")."""
     global procs, visible_windows, gfx_ready, big_bnet_windows, TIMINGS, REPORT
     t0 = time.monotonic()
     el = lambda: time.monotonic() - t0  # noqa: E731
-    play = "--preview-play" in sys.argv
-    delay = lambda: 6 if play and el() > 9 else 0  # noqa: E731
-    order = ["explorer.exe", "Agent.exe", "Wow.exe"]
-    procs = lambda: set(order[:min(2, int(el() / 3))] if play and el() < 12 else order[:int((el() - delay()) / 3)])  # noqa: E731,E501
-    gfx_ready = lambda since: el() - delay() > 12  # noqa: E731
-    visible_windows = lambda rx, by="--name": [1] if rx == WOW_WINDOW and el() - delay() > 15 else []  # noqa: E731,E501
-    big_bnet_windows = lambda: [1] if play and 6 < el() < 12 else []  # noqa: E731
+    order = ["explorer.exe", "Battle.net.exe", "Battle.net.exe", "Wow.exe"]
+    procs = lambda: set(order[:int(el() / 3)])  # noqa: E731
+    gfx_ready = lambda since: el() > 15  # noqa: E731
+    visible_windows = lambda rx, by="--name": [1] if (rx == BNET_MAIN and el() > 9) or (rx == WOW_WINDOW and el() > 18) else []  # noqa: E731,E501
+    big_bnet_windows = lambda: []  # noqa: E731
     TIMINGS = os.path.join(tempfile.gettempdir(), "wow-splash-preview-timings.json")
     REPORT = os.path.join(tempfile.gettempdir(), "wow-splash-preview-report.json")
 
 
 def main():
-    if "--preview" in sys.argv or "--preview-play" in sys.argv:
+    if "--preview" in sys.argv:
         fake_probes()
     splash = Splash()
     splash.show_all()

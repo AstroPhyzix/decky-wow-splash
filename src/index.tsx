@@ -11,11 +11,12 @@ import { callable, definePlugin, toaster } from "@decky/api";
 import { useEffect, useState } from "react";
 import { FaImage } from "react-icons/fa";
 
-type Info = { launcher: string; apps: Record<string, { auto?: boolean }> };
+type Mode = "launch" | "splash";
+type Info = { launcher: string; apps: Record<string, { mode?: Mode }> };
 type Shortcut = { appid: number; name: string; options: string };
 
 const getInfo = callable<[], Info>("get_info");
-const setAuto = callable<[appid: number, auto: boolean], Info["apps"]>("set_auto");
+const setMode = callable<[appid: number, mode: Mode], Info["apps"]>("set_mode");
 const closeSplash = callable<[], number>("close_splash");
 const bugReport = callable<[], Record<string, any>>("bug_report");
 
@@ -94,7 +95,7 @@ async function reportProblem(list: Shortcut[]) {
     [
       ...head,
       last
-        ? `${last.time}, gaming mode: ${last.gaming_mode}, result: ${last.result}\nmilestones: \`${JSON.stringify(last.reached)}\``
+        ? `${last.time}, gaming mode: ${last.gaming_mode}, mode: ${last.mode}, result: ${last.result}\nmilestones: \`${JSON.stringify(last.reached)}\``
         : "No launch recorded yet.",
       ...(log.length ? ["```", ...log, "```"] : []),
     ].join("\n");
@@ -107,7 +108,7 @@ async function reportProblem(list: Shortcut[]) {
 
 function ShortcutRow({ sc, info, onChange }: { sc: Shortcut; info: Info; onChange: () => void }) {
   const enabled = hasSplash(sc.options);
-  const auto = !!info.apps[String(sc.appid)]?.auto;
+  const launch = (info.apps[String(sc.appid)]?.mode ?? "launch") === "launch";
   const toggle = (on: boolean) => {
     const opts = on ? withSplash(sc.options, info.launcher, sc.appid) : withoutSplash(sc.options);
     SteamClient.Apps.SetAppLaunchOptions(sc.appid, opts);
@@ -123,10 +124,14 @@ function ShortcutRow({ sc, info, onChange }: { sc: Shortcut; info: Info; onChang
       {enabled && (
         <PanelSectionRow>
           <ToggleField
-            label="Battle.net starts WoW by itself"
-            description="Off: the splash steps aside while Battle.net waits for you to press Play."
-            checked={auto}
-            onChange={(v) => setAuto(sc.appid, v).then(onChange)}
+            label="Launch WoW directly"
+            description={
+              launch
+                ? "Starts Battle.net and WoW. The splash stays until the game window opens."
+                : "Splash only: covers Battle.net while it loads and signs in, then you press Play."
+            }
+            checked={launch}
+            onChange={(v) => setMode(sc.appid, v ? "launch" : "splash").then(onChange)}
           />
         </PanelSectionRow>
       )}

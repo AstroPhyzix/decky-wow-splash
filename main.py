@@ -12,13 +12,36 @@ SETTINGS = os.path.join(decky.DECKY_PLUGIN_SETTINGS_DIR, "settings.json")
 
 LAUNCHER_SCRIPT = """#!/bin/bash
 # WoW Splash (Decky plugin) launch wrapper. Steam launch options: "<this file>" <appid> %command%
-# Shows the splash when the plugin is installed, and always starts the game.
-SPLASH="{splash}"
+# While the plugin is installed: shows the splash and starts Battle.net through the plugin's
+# wow-splash.bat (in "launch" mode it also makes Battle.net start WoW). Without the plugin it
+# just runs the shortcut as it is.
+DIR="{plugin}/splash"
 APPID=0
 if [[ "$1" =~ ^[0-9]+$ ]]; then APPID="$1"; shift; fi
-if [ -f "$SPLASH" ]; then
-  WOW_SPLASH_SETTINGS="{settings}" WOW_SPLASH_DATA="{data}" \\
-    env -u LD_PRELOAD -u PYTHONPATH -u PYTHONHOME /usr/bin/python3 "$SPLASH" "$APPID" >/dev/null 2>&1 &
+if [ -f "$DIR/splash.py" ]; then
+  MODE=$(env -u LD_PRELOAD -u PYTHONPATH -u PYTHONHOME /usr/bin/python3 -I -c '
+import json, sys
+try:
+    print(json.load(open(sys.argv[1]))["apps"][sys.argv[2]].get("mode", "launch"))
+except Exception:
+    print("launch")' "{settings}/settings.json" "$APPID")
+  # Swap the program Proton runs ("proton waitforexitandrun <exe> [args]") for our bat,
+  # when this is a Proton launch and Battle.net is installed in its prefix.
+  PFX="$STEAM_COMPAT_DATA_PATH/pfx"
+  if [ -n "$STEAM_COMPAT_DATA_PATH" ] && [ -f "$PFX/drive_c/Program Files (x86)/Battle.net/Battle.net Launcher.exe" ]; then
+    ARGS=("$@")
+    for ((i = 1; i < ${{#ARGS[@]}} - 1; i++)); do
+      if [ "${{ARGS[i]}}" = waitforexitandrun ] && [[ "${{ARGS[i-1]}}" == */proton ]]; then
+        cmp -s "$DIR/wow-splash.bat" "$PFX/drive_c/wow-splash.bat" || cp "$DIR/wow-splash.bat" "$PFX/drive_c/wow-splash.bat"
+        ARGS=("${{ARGS[@]:0:i+1}}" "$PFX/drive_c/wow-splash.bat")
+        [ "$MODE" = launch ] && ARGS+=(launch)
+        set -- "${{ARGS[@]}}"
+        break
+      fi
+    done
+  fi
+  WOW_SPLASH_SETTINGS="{settings}" WOW_SPLASH_DATA="{data}" WOW_SPLASH_MODE="$MODE" \\
+    env -u LD_PRELOAD -u PYTHONPATH -u PYTHONHOME /usr/bin/python3 "$DIR/splash.py" "$APPID" >/dev/null 2>&1 &
 fi
 exec "$@"
 """
@@ -35,6 +58,14 @@ def load_settings():
     return {"apps": {}}
 
 
+def app_mode(app):
+    """"launch" (the plugin makes Battle.net start WoW) or "splash" (splash until Battle.net
+    is loaded). Settings from 1.2 had auto: true/false instead."""
+    if app.get("mode") in ("launch", "splash"):
+        return app["mode"]
+    return "splash" if app.get("auto") is False else "launch"
+
+
 def save_settings(data):
     os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
     tmp = SETTINGS + ".tmp"
@@ -45,7 +76,7 @@ def save_settings(data):
 
 def write_launcher():
     text = LAUNCHER_SCRIPT.format(
-        splash=os.path.join(decky.DECKY_PLUGIN_DIR, "splash", "splash.py"),
+        plugin=decky.DECKY_PLUGIN_DIR,
         settings=decky.DECKY_PLUGIN_SETTINGS_DIR,
         data=decky.DECKY_PLUGIN_RUNTIME_DIR,
     )
@@ -87,13 +118,14 @@ def read(path, limit=None):
 
 class Plugin:
     async def get_info(self):
-        return {"launcher": LAUNCHER, "apps": load_settings()["apps"]}
+        apps = {k: {"mode": app_mode(v)} for k, v in load_settings()["apps"].items()}
+        return {"launcher": LAUNCHER, "apps": apps}
 
-    async def set_auto(self, appid: int, auto: bool):
+    async def set_mode(self, appid: int, mode: str):
         data = load_settings()
-        data["apps"].setdefault(str(appid), {})["auto"] = bool(auto)
+        data["apps"][str(appid)] = {"mode": "splash" if mode == "splash" else "launch"}
         save_settings(data)
-        return data["apps"]
+        return (await self.get_info())["apps"]
 
     async def splash_running(self):
         return bool(splash_pids())
@@ -132,6 +164,10 @@ class Plugin:
         }
 
     async def _main(self):
+        data = load_settings()   # 1.2 settings (auto: true/false) -> mode
+        if any("mode" not in v for v in data["apps"].values()):
+            data["apps"] = {k: {"mode": app_mode(v)} for k, v in data["apps"].items()}
+            save_settings(data)
         try:
             write_launcher()
         except OSError as e:
