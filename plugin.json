@@ -1,0 +1,16 @@
+{
+  "name": "WoW Splash",
+  "author": "AstroPhyzix",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "wow",
+      "splash",
+      "battle.net",
+      "launcher"
+    ],
+    "description": "A World of Warcraft loading screen that covers the Proton console and Battle.net windows while WoW starts.",
+    "image": "https://raw.githubusercontent.com/AstroPhyzix/decky-wow-splash/main/assets/preview.png"
+  }
+}
