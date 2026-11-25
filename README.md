@@ -14,7 +14,14 @@ console, the Battle.net windows or the flicker between them.
 - **The real loading steps, not a fake timer:** Starting Proton → Launching Battle.net →
   Signing in to Battle.net → Waiting for World of Warcraft to start → Loading World of Warcraft.
   The progress bar is timed from your last 5 launches.
-- **Steps aside when Battle.net needs you:** login screen, update, license, install. It comes
+- **Shows WoW updates:** when Battle.net has a patch to download (or checks your files with
+  Scan and Repair), the bar turns Battle.net blue and shows the real update progress, what's
+  left to download and the speed. It starts from 0 and fills to wherever the update is, even
+  if it resumes at 70%. WoW only starts once the update is done, so the launch never cancels it.
+
+  ![Update progress](assets/update.jpg)
+
+- **Steps aside when Battle.net needs you:** login screen, license, install. It comes
   back when the game starts, so a fresh install that isn't signed in yet works too.
 - **Never traps you:** hold **View + Menu** for 1.5 s, or use **Close splash** in the plugin
   menu.
@@ -60,12 +67,15 @@ When you press Play:
 
 1. **The wrapper** reads the shortcut's mode and starts the splash. It then has Proton run the
    plugin's `wow-splash.bat` in the shortcut's prefix instead of the shortcut's own program.
-   The bat starts `Battle.net Launcher.exe`. In *Launch WoW directly* mode it also sends
-   `Battle.net.exe --exec="launch WoWF"` every few seconds until `Wow.exe` is running, because
-   Battle.net ignores that command while it is still starting.
+   The bat starts `Battle.net Launcher.exe` and then sends `Battle.net.exe --exec="launch WoWF"`
+   every few seconds until `Wow.exe` is running, because Battle.net ignores that command while
+   it is still starting. That command would also cancel a running update, so the bat holds it
+   back while `C:\wow-splash-wait` exists: the splash removes that file once Battle.net's
+   Agent log (`Operations-*.log`) shows no update, install or repair is running.
 2. **The splash** (`splash.py`, GTK) follows the launch from what it can see: processes
    (`explorer.exe`, `Battle.net.exe`, `Wow.exe`), Battle.net's windows, WoW's `Logs/gx.log`
-   (graphics device ready) and finally the WoW window. It closes the moment that window opens,
+   (graphics device ready) and finally the WoW window. During an update it reads the
+   progress Battle.net's Agent writes to its log (`Agent-*.log`) and shows that instead. It closes the moment that window opens,
    or once Battle.net is ready in splash-only mode.
 3. **In Gaming Mode**, gamescope would switch focus to every new launcher window, which makes
    the screen flash. The splash keeps itself in front by pinning gamescope's focus on Steam's

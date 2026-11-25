@@ -38,7 +38,14 @@ except Exception:
       if [ "${{ARGS[i]}}" = waitforexitandrun ] && [[ "${{ARGS[i-1]}}" == */proton ]]; then
         cmp -s "$DIR/wow-splash.bat" "$PFX/drive_c/wow-splash.bat" || cp "$DIR/wow-splash.bat" "$PFX/drive_c/wow-splash.bat"
         ARGS=("${{ARGS[@]:0:i+1}}" "$PFX/drive_c/wow-splash.bat")
-        [ "$MODE" = launch ] && ARGS+=(launch)
+        if [ "$MODE" = launch ]; then
+          ARGS+=(launch)
+          # The bat waits while this file exists; the splash removes it once Battle.net has
+          # no update/repair running (a launch request cancels a running update).
+          WAIT="$PFX/drive_c/wow-splash-wait"
+          : > "$WAIT"
+          export WOW_SPLASH_WAIT="$WAIT"
+        fi
         set -- "${{ARGS[@]}}"
         break
       fi

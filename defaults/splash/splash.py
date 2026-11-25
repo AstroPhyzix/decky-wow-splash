@@ -13,6 +13,9 @@ Deck's controller closes the splash (read from its hidraw device).
 
 Progress is stage based (processes / log lines / windows seen), interpolated with the
 average timings of the last 5 launches, and smoothed so the bar never stalls.
+While Battle.net downloads a WoW update the bar shows the real update progress instead,
+read from the Battle.net Agent's log (it logs every progress poll: `GET /install/wowf` for an
+install, `GET /update/wowf` for a patch, `GET /repair/wowf` for Scan and Repair; a pause is `DELETE /update/wowf`).
 
 Gaming Mode: a normal fullscreen window with its own STEAM_GAME id (see SPLASH_APPID). gamescope would focus
 each newly mapped launcher window (every focus change = a fade), so FocusPin keeps the
@@ -24,10 +27,13 @@ override-redirect popups, which would otherwise end up on top).
 No live log file; at exit a short record of the launch goes to last-launch.json (for bug
 reports). `--preview` fakes every probe for a desktop test (prints its log to the terminal).
 """
+import calendar
 import ctypes
 import ctypes.util
+import glob
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -121,6 +127,8 @@ def procs():
                 found.add(comm)
                 if comm == "Wow.exe":
                     procs.wow_pid = pid
+                elif comm == "Agent.exe":
+                    procs.agent_pid = pid
             elif comm == "CrBrowserMain" or comm.startswith("Battle.net"):
                 with open(f"/proc/{pid}/cmdline", "rb") as f:
                     if b"Battle.net.exe" in f.read():
@@ -131,6 +139,7 @@ def procs():
 
 
 procs.wow_pid = None
+procs.agent_pid = None
 
 
 def visible_windows(regex, by="--name"):
@@ -167,6 +176,11 @@ def game_dir(pid):
             return cwd
     except OSError:
         pass
+    return exe_dir(pid)
+
+
+def exe_dir(pid):
+    """Unix folder of a Wine process's exe (its Windows path mapped through its prefix)."""
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
             exe = f.read().split(b"\0")[0].decode(errors="replace")
@@ -186,7 +200,7 @@ def game_dir(pid):
     drive = os.path.join(prefix, "dosdevices", exe[0].lower() + ":")
     if not os.path.isdir(drive):
         drive = os.path.join(prefix, "drive_" + exe[0].lower())
-    return os.path.join(drive, *exe[3:].split("\\")[:-1])
+    return os.path.join(drive, *exe[3:].replace("\\", "/").split("/")[:-1])   # Agent.exe uses "/"
 
 
 def gfx_ready(since):
@@ -210,6 +224,229 @@ def gfx_ready(since):
 
 
 gfx_ready.dirs = {}
+
+
+POLL = re.compile(r"Request GET /(install|update|repair)/wow")
+PAUSE = re.compile(r"Request DELETE /(install|update|repair)/wow")
+
+
+class UpdateWatch:
+    """Reads the Battle.net Agent's log (Agent.<ver>/Logs/Agent-*.log, written live) for its
+    answers to `GET /install/wow*` (install) and `GET /update/wow*` (patch), which Battle.net
+    polls while it installs or updates the game. `DELETE /update/wow*` = paused (kept until
+    the next answer, since polls may stop while paused). read() -> latest {"progress" 0..1, "left" bytes, "rate" bytes/s,
+    "paused"} or None. Reads only new text (kept offset), so each tick is cheap.
+    The Agent stops writing its log near 8 MiB (~30 min of polls; seen on the first install).
+    After that, while the Agent still runs, progress is carried on from the last download
+    rate ("estimated"), so a long update keeps its bar."""
+    MAX_READ = 1 << 20
+    LOG_FULL = 8 * 1024 * 1024 - 256 * 1024
+
+    def __init__(self, since):
+        self.since = since          # only logs written during this launch
+        self.dir = None
+        self.path, self.pos, self.buf = None, 0, ""
+        self.body = None            # lines of the response being collected
+        self.latest, self.latest_at = None, 0.0
+        self.size = 0
+        self.kind = "update"         # install | update | repair (Scan and Repair)
+
+    def find_log(self):
+        # The first Agent.exe is a small starter (Agent/Agent.exe) that then runs the real one
+        # (Agent/Agent.<ver>/Agent.exe): only settle on a Logs folder written during this launch.
+        if self.dir is None and procs.agent_pid:
+            d = exe_dir(procs.agent_pid)
+            if d:
+                for cand in [os.path.join(d, "Logs")] + sorted(glob.glob(os.path.join(d, "Agent.*", "Logs"))):
+                    try:
+                        fresh = any(n.startswith("Agent-") and n.endswith(".log") and
+                                    os.path.getmtime(os.path.join(cand, n)) >= self.since
+                                    for n in os.listdir(cand))
+                    except OSError:
+                        continue
+                    if fresh:
+                        self.dir = cand
+                        log("agent logs", self.dir)
+                        break
+        if not self.dir:
+            return
+        try:
+            logs = [os.path.join(self.dir, n) for n in os.listdir(self.dir)
+                    if n.startswith("Agent-") and n.endswith(".log")]
+            newest = max(logs, key=os.path.getmtime, default=None)
+            if newest and newest != self.path and os.path.getmtime(newest) >= self.since:
+                self.path, self.pos, self.buf, self.body = newest, 0, "", None
+        except OSError:
+            pass
+
+    def read(self):
+        self.find_log()
+        if not self.path:
+            return None
+        try:
+            with open(self.path, "rb") as f:
+                size = self.size = os.fstat(f.fileno()).st_size
+                if size - self.pos > self.MAX_READ:     # fell behind: skip to recent text
+                    self.pos, self.buf, self.body = size - self.MAX_READ, "", None
+                f.seek(self.pos)
+                data = f.read(size - self.pos)
+                self.pos = size
+        except OSError:
+            return None
+        lines = (self.buf + data.decode("utf-8", "replace")).split("\n")
+        self.buf = lines.pop()
+        for line in lines:
+            line = line.rstrip("\r")
+            if line.startswith("["):
+                m = POLL.search(line)
+                self.body = [] if m else None
+                if m:
+                    self.kind = m.group(1)
+                if PAUSE.search(line) and self.latest:
+                    log("update paused (DELETE)")
+                    self.latest = dict(self.latest, paused=True, rate=0, sticky=True)
+            elif self.body is not None:
+                if line.startswith("Response 200") and line.endswith("{"):
+                    self.body = ["{"]
+                elif self.body:
+                    self.body.append(line)
+                    if line == "}":
+                        self.parse("\n".join(self.body))
+                        self.body = None
+        if self.full():
+            return self.estimate()
+        return self.latest
+
+    def full(self):
+        """The log stopped near its size limit while the Agent still runs."""
+        return bool(self.latest) and self.size >= self.LOG_FULL and \
+            time.monotonic() - self.latest_at > 10 and self.latest["progress"] < 1.0 and \
+            bool(procs.agent_pid) and os.path.exists(f"/proc/{procs.agent_pid}")
+
+    def estimate(self):
+        """Last known progress carried on at the last download rate (never past 99%)."""
+        u = self.latest
+        if u["paused"] or u["rate"] <= 0 or u["left"] <= 0:
+            return dict(u, estimated=True)
+        dt = time.monotonic() - self.latest_at
+        done = min(1.0, u["rate"] * dt / u["left"])
+        return dict(u, progress=min(0.99, u["progress"] + (1 - u["progress"]) * done),
+                    left=int(u["left"] * (1 - done)), estimated=True)
+
+    def parse(self, text):
+        try:
+            r = json.loads(text)
+            new = {"progress": float(r.get("progress", 0)),
+                   "left": int(r.get("download_remaining", 0) or 0),
+                   "rate": int(r.get("download_rate", 0) or 0),
+                   "paused": bool(r.get("paused")), "kind": self.kind}
+        except (ValueError, TypeError, AttributeError):
+            return
+        old = self.latest
+        if not old or int(old["progress"] * 100) != int(new["progress"] * 100) or old["paused"] != new["paused"]:
+            log("update", f"{new['progress'] * 100:.1f}%", "left", new["left"], "rate", new["rate"],
+                "paused" if new["paused"] else "")
+        self.latest, self.latest_at = new, time.monotonic()
+
+    def active(self):
+        """An install/update running right now (answer seen in the last 10 s, not finished,
+        or the log is full and the Agent still runs)."""
+        u = self.latest
+        if u and u.get("sticky"):    # paused: stays until a new answer or the Agent exits
+            return bool(procs.agent_pid) and os.path.exists(f"/proc/{procs.agent_pid}")
+        return bool(u) and u["progress"] < 1.0 and (time.monotonic() - self.latest_at < 10 or self.full())
+
+
+OP_START = re.compile(r"(?:Queue operation - |Resuming )(OP_\w+) for 'wow\w*'")
+OP_END = re.compile(r"(OP_\w+) for 'wow\w*' (?:completed|done)")
+LOG_TIME = re.compile(r"^\[\w (\d{4}-\d\d-\d\d \d\d:\d\d:\d\d)")
+
+
+class LaunchGate:
+    """Launch mode: the bat sends "launch WoWF" only while WOW_SPLASH_WAIT (a file in the
+    prefix, made by the wrapper) is gone. Battle.net cancels a running update/repair when
+    asked to launch (Operations log: "Cancel requested for active operation - OP_UPDATE"),
+    so the file stays until the Agent's Operations-*.log shows the game's version check done
+    and no update/repair running for GRACE s (an update is queued ~1.5 s after the check,
+    a repair is followed by an update ~1 s later). Log times are UTC."""
+    GRACE = 4
+    FALLBACK = 60     # no Operations log by then (from the splash start) -> let the bat launch
+
+    def __init__(self, updates, since):
+        self.path = os.environ.get("WOW_SPLASH_WAIT")
+        self.held = bool(self.path) and os.path.exists(self.path)
+        self.updates = updates        # its .dir = the Agent's Logs folder, once known
+        self.since = since
+        self.t0 = time.monotonic()
+        self.log, self.pos, self.buf = None, 0, ""
+        self.busy = None              # OP_UPDATE / OP_REPAIR / OP_INSTALL running
+        self.idle_at = None           # version check done / op over, since when
+
+    def find_log(self):
+        d = self.updates.dir
+        if not d:
+            return
+        try:
+            logs = [os.path.join(d, n) for n in os.listdir(d)
+                    if n.startswith("Operations-") and n.endswith(".log")]
+            newest = max(logs, key=os.path.getmtime, default=None)
+            if newest and newest != self.log and os.path.getmtime(newest) >= self.since:
+                self.log, self.pos, self.buf = newest, 0, ""
+                log("operations log", os.path.basename(newest))
+        except OSError:
+            pass
+
+    def read(self):
+        try:
+            with open(self.log, "rb") as f:
+                f.seek(self.pos)
+                data = f.read()
+                self.pos += len(data)
+        except OSError:
+            return
+        lines = (self.buf + data.decode("utf-8", "replace")).split("\n")
+        self.buf = lines.pop()
+        for line in lines:
+            m = LOG_TIME.match(line)
+            try:
+                if not m or calendar.timegm(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")) < self.since:
+                    continue          # an Agent left running from an earlier session
+            except ValueError:
+                continue
+            start, end = OP_START.search(line), OP_END.search(line)
+            if start and start.group(1) != "OP_VERSION":
+                self.busy, self.idle_at = start.group(1), None
+                log("battle.net", self.busy, "-> hold launch")
+            elif end and (end.group(1) == self.busy or (not self.busy and end.group(1) == "OP_VERSION")):
+                if self.busy:
+                    log("battle.net", self.busy, "over")
+                self.busy, self.idle_at = None, time.monotonic()
+
+    def tick(self, wow_running, bnet_gone):
+        if not self.held:
+            return
+        if wow_running:
+            return self.release("WoW running")
+        if bnet_gone:
+            return self.release("Battle.net closed")
+        self.updates.find_log()
+        self.find_log()
+        if self.log:
+            self.read()
+            if not self.busy and self.idle_at and time.monotonic() - self.idle_at >= self.GRACE:
+                self.release("no update running")
+        elif time.monotonic() - self.t0 > self.FALLBACK:
+            self.release("no Operations log found")
+
+    def release(self, why="splash closed"):
+        if not self.held:
+            return
+        self.held = False
+        log("launch allowed:", why)
+        try:
+            os.unlink(self.path)
+        except OSError:
+            pass
 
 
 # ---------- X properties (ctypes Xlib, no extra packages) ----------
@@ -535,6 +772,12 @@ class Splash(Gtk.Window):
         self.shown = 0.0               # smoothed percentage drawn on screen
         self.done = False
         self.drawn_key = None          # what the bar strip last showed
+        self.updates = UpdateWatch(self.wall0 - 5)
+        self.update_at = None          # set while Battle.net updates the game
+        self.update_info = None        # its latest progress (UpdateWatch.read())
+        self.gate = LaunchGate(self.updates, self.wall0 - 5)
+        self.procs_seen = set()        # last procs() result
+        self.gate_gone = None          # Battle.net and its Agent both gone since (gate)
         log("expected", {k: round(v, 1) for k, v in self.t.items()})
         log("gaming mode", GAMING_MODE, "display", os.environ.get("DISPLAY"), "appid", APPID,
             "mode", self.mode)
@@ -563,6 +806,8 @@ class Splash(Gtk.Window):
         self.combo = CloseCombo(lambda: self.finish("closed with View + Menu"))
         GLib.timeout_add(33, self.tick_anim)
         GLib.timeout_add(500, self.tick_state)
+        if self.gate.held:
+            GLib.timeout_add(500, self.tick_gate)
 
     def xid(self):
         return self.get_window().get_xid()
@@ -592,7 +837,7 @@ class Splash(Gtk.Window):
     def update_milestones(self):
         """Returns False once the launch is over without WoW: the game closed after
         starting, or Battle.net was closed before it started it."""
-        p = procs()
+        p = self.procs_seen = procs()
         if "explorer.exe" in p:
             self.reach("wine")
         if "Battle.net.exe" in p:
@@ -641,6 +886,26 @@ class Splash(Gtk.Window):
         self.seen.pop(reason, None)
         return False
 
+    def update_update(self):
+        """Battle.net updating the game: the bar shows the update; that time isn't load time."""
+        if self.stage < BNET or self.stage >= WOW:
+            return
+        self.update_info = self.updates.read()
+        # Battle.net's own operation counts too: its progress polls stop for a while during the
+        # update's "Initializing" step (seen: 25 s), which alone would read as "update over".
+        busy = self.updates.active() or bool(self.gate.busy)
+        if busy and self.update_at is None:
+            log("update running")
+            self.update_at = time.monotonic()
+            self.calibrate = False
+            self.shown = 0.0    # restart the bar from 0; it then fills to the real update %
+        elif not busy and self.update_at is not None:
+            log("update over")
+            if self.aside_at is None:
+                self.t0 += time.monotonic() - self.update_at
+            self.update_at = None
+            self.shown = self.target_pct()
+
     def update_aside(self):
         """Hide while Battle.net needs the player: its login window, or any big Battle.net
         window (main window waiting for Play, update, EULA, Install...) that stays up:
@@ -650,7 +915,9 @@ class Splash(Gtk.Window):
         if BNET <= self.stage < WOW:
             if self.window_up("login", LOGIN_WINDOW, LOGIN_GRACE):
                 why = "login"
-            elif self.mode == "launch" and self.window_up_ids("bnet", big_bnet_windows(), STUCK_GRACE):
+            elif self.mode == "launch" and \
+                    (self.update_at is None or (self.update_info or {}).get("paused")) and \
+                    self.window_up_ids("bnet", big_bnet_windows(), STUCK_GRACE):
                 why = "battle.net window"
         if why:
             self.calibrate = False
@@ -664,6 +931,8 @@ class Splash(Gtk.Window):
             self.show_all()
             self.focus.pin(self.xid())
             self.t0 += time.monotonic() - self.aside_at
+            if self.update_at is not None:
+                self.update_at = time.monotonic()
             self.aside_at = None
 
     def window_up_ids(self, reason, ids, grace):
@@ -679,6 +948,7 @@ class Splash(Gtk.Window):
         self.ticks += 1
         if self.aside_at is not None and self.ticks % 4:
             return True     # aside (maybe for a long install/update): check every 2 s
+        self.update_update()
         if not self.update_milestones():
             self.finish("WoW closed" if self.stage >= WOW else "Battle.net closed")
         else:
@@ -687,7 +957,8 @@ class Splash(Gtk.Window):
                 if self.calibrate:
                     save_timings(self.reached)
                 self.finish("WoW window open" if self.mode == "launch" else "Battle.net ready")
-            elif self.stage < min(WOW, self.last) and self.aside_at is None and self.elapsed() > TIMEOUT:
+            elif self.stage < min(WOW, self.last) and self.aside_at is None and self.update_at is None \
+                    and self.elapsed() > TIMEOUT:
                 self.finish("timeout before WoW started, stepping aside")
         return not self.done
 
@@ -701,10 +972,38 @@ class Splash(Gtk.Window):
         self.done = True
         self.shown = 100.0
         self.area.queue_draw()
-        GLib.timeout_add(150, Gtk.main_quit)
+        GLib.timeout_add(150, self.close)
+
+    def close(self):
+        if not self.gate.held:
+            Gtk.main_quit()
+            return False
+        log("hidden; still holding the launch until Battle.net is done")
+        self.hide()
+        return False
+
+    def tick_gate(self):
+        """Lets the bat ask Battle.net to start WoW once no update is running. Keeps going
+        after the splash closed (hidden), so closing it never cancels an update."""
+        p = procs() if self.done else self.procs_seen
+        # Battle.net restarts itself while starting (no Battle.net.exe for a moment), so
+        # "closed" only counts after GONE_GRACE, like update_milestones().
+        if self.stage >= BNET and not p & {"Battle.net.exe", "Agent.exe"}:
+            self.gate_gone = self.gate_gone or time.monotonic()
+        else:
+            self.gate_gone = None
+        self.gate.tick("Wow.exe" in p, bool(self.gate_gone) and time.monotonic() - self.gate_gone >= GONE_GRACE)
+        if self.gate.held:
+            return True
+        if self.done:
+            Gtk.main_quit()
+        return False
 
     # ----- animation -----
     def target_pct(self):
+        if self.update_at is not None:
+            # no Agent answer yet (only the Operations log knows): hold at 0, not the launch bar
+            return self.update_info["progress"] * 100 if self.update_info else 0.0
         if self.stage >= self.last:
             return 100.0
         a, b = self.t[KEYS[self.stage]], self.t[KEYS[self.stage + 1]]
@@ -721,7 +1020,7 @@ class Splash(Gtk.Window):
         self.shown += (self.target_pct() - self.shown) * 0.15
         w, h = self.area.get_allocated_width(), self.area.get_allocated_height()
         bx, by, bw, bh, text_y, _ = self.layout(w, h)
-        key = (int(bw * min(100, self.shown) / 100), self.stage, w, h)
+        key = (int(bw * min(100, self.shown) / 100), self.status(), w, h)
         if key != self.drawn_key:
             self.drawn_key = key
             top = int(text_y - h * 0.045)
@@ -790,15 +1089,20 @@ class Splash(Gtk.Window):
         cr.set_source_rgba(1, 1, 1, 0.15)
         pill(bx, by, bw, bh)
         g = cairo.LinearGradient(bx, 0, bx + bw, 0)
-        g.add_color_stop_rgb(0, 0.95, 0.62, 0.15)
-        g.add_color_stop_rgb(1, 1.0, 0.85, 0.40)
+        updating = self.update_at is not None
+        if updating:      # Battle.net blue (#148EFF -> #00AEFF)
+            g.add_color_stop_rgb(0, 0.08, 0.56, 1.0)
+            g.add_color_stop_rgb(1, 0.0, 0.68, 1.0)
+        else:
+            g.add_color_stop_rgb(0, 0.95, 0.62, 0.15)
+            g.add_color_stop_rgb(1, 1.0, 0.85, 0.40)
         cr.set_source(g)
         pill(bx, by, max(bh, bw * self.shown / 100), bh)
 
         cr.select_font_face("Sans", cairo.FONT_SLANT_NORMAL, cairo.FONT_WEIGHT_BOLD)
         cr.set_font_size(pct_size)
         pct = f"{min(100, int(self.shown))}%"
-        cr.set_source_rgb(1, 0.9, 0.6)
+        cr.set_source_rgb(*((0.55, 0.8, 1.0) if updating else (1, 0.9, 0.6)))
         cr.move_to(bx + bw - cr.text_extents(pct).x_advance, text_y)
         cr.show_text(pct)
 
@@ -810,6 +1114,23 @@ class Splash(Gtk.Window):
         return True
 
     def status(self):
+        u = self.update_info
+        if self.update_at is not None and u:
+            if u["paused"]:
+                return "World of Warcraft update paused"
+            if u.get("kind") == "repair":
+                return "Checking World of Warcraft files…"
+            if u["progress"] <= 0 and u["left"] <= 0:
+                return "Preparing World of Warcraft update…"
+            text = "Updating World of Warcraft…"
+            if u["left"] > 0:
+                text += "  about" if u.get("estimated") else " "
+                text += f" {u['left'] / 1e9:.1f} GB left" if u["left"] >= 1e9 else f" {u['left'] / 1e6:.0f} MB left"
+            if u["rate"] > 0:
+                text += f" · {u['rate'] / 1e6:.0f} MB/s"
+            return text
+        if self.update_at is not None:
+            return "Preparing World of Warcraft update…"
         if self.stage == BNET and self.seen.get("login"):
             return "Waiting for Battle.net sign-in…"
         if self.stage == READY and self.mode == "splash":
@@ -819,15 +1140,33 @@ class Splash(Gtk.Window):
 
 def fake_probes():
     """--preview: an 18 s fake launch on the desktop, without touching real timings.
-    Add --splash-only for the splash-only mode (closes at 9 s, when Battle.net is "ready")."""
-    global procs, visible_windows, gfx_ready, big_bnet_windows, TIMINGS, REPORT
+    Add --splash-only for the splash-only mode (closes at 9 s, when Battle.net is "ready").
+    Add --update for a 20 s fake game update from 7 s, resumed at 40% (WoW starts 20 s later)."""
+    global procs, visible_windows, gfx_ready, big_bnet_windows, TIMINGS, REPORT, UpdateWatch
     t0 = time.monotonic()
     el = lambda: time.monotonic() - t0  # noqa: E731
-    order = ["explorer.exe", "Battle.net.exe", "Battle.net.exe", "Wow.exe"]
+    up = 20 if "--update" in sys.argv else 0
+    order = ["explorer.exe", "Battle.net.exe", "Battle.net.exe"] + ["Battle.net.exe"] * (up // 3) + ["Wow.exe"]
     procs = lambda: set(order[:int(el() / 3)])  # noqa: E731
-    gfx_ready = lambda since: el() > 15  # noqa: E731
-    visible_windows = lambda rx, by="--name": [1] if (rx == BNET_MAIN and el() > 9) or (rx == WOW_WINDOW and el() > 18) else []  # noqa: E731,E501
+    gfx_ready = lambda since: el() > 15 + up  # noqa: E731
+    visible_windows = lambda rx, by="--name": [1] if (rx == BNET_MAIN and el() > 9) or (rx == WOW_WINDOW and el() > 18 + up) else []  # noqa: E731,E501
     big_bnet_windows = lambda: []  # noqa: E731
+
+    class FakeUpdate:
+        def __init__(self, since):
+            self.latest = None
+
+        def read(self):
+            p = (el() - 7) / 20
+            if up and 0 <= p <= 1.1:
+                p = min(1.0, 0.4 + 0.6 * p)     # a patch resumed at 40%
+                self.latest = {"progress": p, "left": int(2.4e9 * (1 - p)),
+                               "rate": 0 if p > 0.85 else 24_000_000, "paused": False}
+            return self.latest
+
+        def active(self):
+            return bool(self.latest) and self.latest["progress"] < 1.0
+    UpdateWatch = FakeUpdate
     TIMINGS = os.path.join(tempfile.gettempdir(), "wow-splash-preview-timings.json")
     REPORT = os.path.join(tempfile.gettempdir(), "wow-splash-preview-report.json")
 
@@ -842,6 +1181,7 @@ def main():
         Gtk.main()
     finally:
         splash.focus.release()   # never leave gamescope pinned to a dead window
+        splash.gate.release()    # never leave the bat waiting forever
         if not splash.done:
             write_report("stopped (SIGTERM / Close splash)", splash)
 
